@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ShopSwitch Settings</title>
+<style>
+  :root {
+    --ss-blue: #2563EB;
+    --ss-green: #0DAA4C;
+    --ss-text: #1E293B;
+    --ss-dim: #64748B;
+    --ss-border: #E2E8F0;
+    --ss-bg: #F8FAFC;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 380px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--ss-bg);
+    color: var(--ss-text);
+    font-size: 13px;
+    padding: 20px;
+    line-height: 1.5;
+  }
+
+  h1 {
+    font-size: 17px; font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    font-size: 11.5px; color: var(--ss-dim);
+    margin-bottom: 20px;
+  }
+  .version {
+    font-size: 10px; color: var(--ss-dim);
+    margin-bottom: 20px; display: block;
+  }
+
+  .section {
+    background: white;
+    border: 1px solid var(--ss-border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .section h2 {
+    font-size: 13px; font-weight: 700;
+    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .toggle-row label {
+    font-size: 12.5px; font-weight: 500;
+  }
+  .toggle-row .hint {
+    font-size: 11px; color: var(--ss-dim);
+    font-weight: 400;
+  }
+
+  /* Toggle switch */
+  .switch {
+    position: relative;
+    width: 40px; height: 22px;
+    flex-shrink: 0;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; cursor: pointer;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: #CBD5E1;
+    border-radius: 22px;
+    transition: 0.2s;
+  }
+  .slider:before {
+    content: "";
+    position: absolute;
+    height: 16px; width: 16px;
+    left: 3px; bottom: 3px;
+    background: white;
+    border-radius: 50%;
+    transition: 0.2s;
+  }
+  input:checked + .slider { background: var(--ss-blue); }
+  input:checked + .slider:before { transform: translateX(18px); }
+
+  .info-box {
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: #EFF6FF;
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--ss-blue);
+    line-height: 1.5;
+  }
+
+  .save-btn {
+    width: 100%;
+    padding: 10px;
+    background: var(--ss-blue);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .save-btn:hover { background: #1D4ED8; }
+  .save-btn:active { transform: scale(0.98); }
+
+  .saved-msg {
+    text-align: center;
+    font-size: 12px;
+    color: var(--ss-green);
+    font-weight: 600;
+    margin-top: 8px;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .saved-msg.show { opacity: 1; }
+
+  .about {
+    font-size: 11px;
+    color: var(--ss-dim);
+    text-align: center;
+    margin-top: 16px;
+    line-height: 1.6;
+  }
+  .about a { color: var(--ss-blue); text-decoration: none; }
+  .about a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <h1>⚙ ShopSwitch Settings</h1>
+  <p class="subtitle">Configure how ShopSwitch works for you</p>
+
+  <div class="section">
+    <h2>💙 Support development</h2>
+    <div class="toggle-row">
+      <div>
+        <label>Enable affiliate support</label>
+        <div class="hint">Links include a referral code — costs you nothing</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="affiliateEnabled">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="info-box">
+      When enabled, links to bol. include a small referral tag. This helps fund ShopSwitch development at zero extra cost to you. You'll always see the same prices — we just get a tiny commission from bol. if you buy something. Thank you for your support!
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>🏪 Stores (coming soon)</h2>
+    <div class="toggle-row">
+      <div>
+        <label>bol.</label>
+        <div class="hint">Netherlands & Belgium</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked disabled>
+        <span class="slider" style="cursor: default;"></span>
+      </label>
+    </div>
+    <div class="toggle-row" style="opacity: 0.5;">
+      <div>
+        <label>More stores</label>
+        <div class="hint">Additional EU platforms coming soon</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" disabled>
+        <span class="slider" style="cursor: default;"></span>
+      </label>
+    </div>
+  </div>
+
+  <button class="save-btn" id="saveBtn">Save settings</button>
+  <div class="saved-msg" id="savedMsg">✓ Settings saved</div>
+
+  <div class="about">
+    ShopSwitch v1.0.0 · <a href="https://shopswitch.eu" target="_blank">shopswitch.eu</a><br>
+    Find it locally, buy it smarter
+  </div>
+
+<script src="settings.js"></script>
+</body>
+</html>

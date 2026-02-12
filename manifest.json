@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "ShopSwitch — Smart EU Alternatives",
+  "version": "1.0.0",
+  "description": "Instantly find the same product on bol.com when browsing Amazon. Compare prices, see match quality, and switch to local EU stores with one click.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.amazon.nl/*",
+    "https://www.amazon.de/*",
+    "https://www.amazon.com/*",
+    "https://www.amazon.co.uk/*",
+    "https://www.amazon.fr/*",
+    "https://www.amazon.es/*",
+    "https://www.amazon.it/*",
+    "https://www.bol.com/*",
+    "https://api.upcitemdb.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.amazon.nl/*/dp/*",
+        "https://www.amazon.de/*/dp/*",
+        "https://www.amazon.com/*/dp/*",
+        "https://www.amazon.co.uk/*/dp/*",
+        "https://www.amazon.fr/*/dp/*",
+        "https://www.amazon.es/*/dp/*",
+        "https://www.amazon.it/*/dp/*",
+        "https://www.amazon.nl/dp/*",
+        "https://www.amazon.de/dp/*",
+        "https://www.amazon.com/dp/*",
+        "https://www.amazon.co.uk/dp/*",
+        "https://www.amazon.fr/dp/*",
+        "https://www.amazon.es/dp/*",
+        "https://www.amazon.it/dp/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "options_ui": {
+    "page": "settings.html",
+    "open_in_tab": false
+  }
+}
