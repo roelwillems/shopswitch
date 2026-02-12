@@ -101,31 +101,72 @@
     return info;
   }
 
-  setTimeout(() => {
-    const productInfo = extractProductInfo();
-    if (!productInfo.title) return;
+  function getAsinFromUrl(url) {
+    const m = (url || location.href).match(/\/dp\/([A-Z0-9]{10})/i);
+    return m ? m[1] : null;
+  }
+
+  function sendProduct(productInfo) {
     chrome.runtime.sendMessage(
       { type: "PRODUCT_DETECTED", product: productInfo },
       () => { if (chrome.runtime.lastError) { /* ignore */ } }
     );
-  }, 1500);
+  }
 
-  // SPA navigation detection
-  let lastUrl = location.href;
-  const observer = new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      window.__shopSwitchRan = false;
-      setTimeout(() => {
-        const productInfo = extractProductInfo();
-        if (productInfo.title) {
-          chrome.runtime.sendMessage(
-            { type: "PRODUCT_DETECTED", product: productInfo },
-            () => { if (chrome.runtime.lastError) { /* ignore */ } }
-          );
-        }
-      }, 2000);
+  // Wait for the title element to appear/update, then extract and send
+  function waitForTitleAndSend(previousTitle, timeout) {
+    const deadline = Date.now() + (timeout || 5000);
+    const interval = 200;
+    function poll() {
+      const info = extractProductInfo();
+      if (info.title && info.title !== previousTitle) {
+        sendProduct(info);
+        return;
+      }
+      if (Date.now() < deadline) {
+        setTimeout(poll, interval);
+      } else if (info.title) {
+        // Timed out but we have a title — send what we have
+        sendProduct(info);
+      }
     }
-  });
+    poll();
+  }
+
+  // --- Initial detection ---
+  let lastAsin = getAsinFromUrl();
+  waitForTitleAndSend(null, 5000);
+
+  // --- SPA navigation detection ---
+  let debounceTimer = null;
+
+  function handleNavigation() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      const newAsin = getAsinFromUrl();
+      if (newAsin && newAsin === lastAsin) return;
+      const previousTitle = newAsin !== lastAsin
+        ? (document.getElementById("productTitle") || {}).textContent?.trim()
+        : null;
+      lastAsin = newAsin;
+      waitForTitleAndSend(previousTitle, 5000);
+    }, 300);
+  }
+
+  // Intercept History API for SPA navigations
+  const origPushState = history.pushState;
+  const origReplaceState = history.replaceState;
+  history.pushState = function () {
+    origPushState.apply(this, arguments);
+    handleNavigation();
+  };
+  history.replaceState = function () {
+    origReplaceState.apply(this, arguments);
+    handleNavigation();
+  };
+  window.addEventListener("popstate", handleNavigation);
+
+  // Keep MutationObserver as a fallback for edge cases
+  const observer = new MutationObserver(handleNavigation);
   observer.observe(document.body, { childList: true, subtree: true });
 })();
