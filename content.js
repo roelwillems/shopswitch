@@ -54,14 +54,20 @@
     }
 
     // --- Brand ---
+    // Amazon NL shows various patterns: "Bezoek de X Store", "De X Store openen",
+    // "Brand: X", "Merk: X", "Visit the X Store", etc.
     const brandEl =
       document.getElementById("bylineInfo") ||
       document.querySelector("#brand") ||
       document.querySelector('a[id="bylineInfo"]');
     if (brandEl) {
       info.brand = brandEl.textContent
-        .replace(/^(Brand:\s*|Bezoek de |Visit the |Merk:\s*)/i, "")
-        .replace(/(-?store|-?winkel|-?Shop)$/i, "")
+        // Dutch patterns
+        .replace(/^(Bezoek de |De )/i, "")
+        .replace(/\s*(Store|Winkel|Shop)\s*(openen|bezoeken|pagina)?\s*$/i, "")
+        // English patterns
+        .replace(/^(Brand:\s*|Visit the |Merk:\s*)/i, "")
+        .replace(/\s*(Store|Shop|Brand)\s*(Page)?\s*$/i, "")
         .trim();
     }
 

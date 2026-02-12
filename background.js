@@ -176,13 +176,22 @@ function cleanTitle(title, maxWords) {
 function cleanBrand(brand) {
   if (!brand) return "";
   return brand
+    // Book roles (NL + EN)
     .replace(/\(auteur\)/gi, "").replace(/\(vertaler?\)/gi, "")
     .replace(/\(author\)/gi, "").replace(/\(translator?\)/gi, "")
     .replace(/\(redactie\)/gi, "").replace(/\(editor\)/gi, "")
     .replace(/\(illustrator\)/gi, "")
-    .replace(/[-\s]*(store|winkel|shop|brand|official|merk)\s*$/gi, "")
-    .replace(/^(bezoek de |visit the |merk:\s*|brand:\s*)/gi, "")
-    .replace(/,.*$/g, "").replace(/[™®©]/g, "").trim();
+    // Dutch Amazon prefixes: "Bezoek de X", "De X Store openen"
+    .replace(/^(bezoek de |de )/gi, "")
+    // English Amazon prefixes
+    .replace(/^(visit the |brand:\s*|merk:\s*)/gi, "")
+    // Trailing store/shop + optional verb: "Store openen", "Store bezoeken", "Store Page"
+    .replace(/\s*[-\s]*(store|winkel|shop|brand|official|merk)\s*(openen|bezoeken|pagina|page)?\s*$/gi, "")
+    // Take only first part before comma (removes co-authors, sub-brands)
+    .replace(/,.*$/g, "")
+    // Remove trademark symbols
+    .replace(/[™®©]/g, "")
+    .trim();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -200,26 +209,104 @@ function tokenize(text) {
     .replace(/[™®©\(\)\[\]\{\}]/g, " ")
     .replace(/[^a-z0-9àáâãäåæçèéêëìíîïðñòóôõöùúûüýþÿ\s]/g, " ")
     .split(/\s+/)
-    .filter(w => w.length >= 2 && !STOP_WORDS.has(w));
+    .filter(w => {
+      if (STOP_WORDS.has(w)) return false;
+      if (w.length >= 2) return true;
+      // Allow single digits — they differentiate product versions (Flip 6 vs 5)
+      if (/^\d$/.test(w)) return true;
+      return false;
+    });
 }
 
 /**
- * Classify a token as brand, spec, or generic — for weighting.
+ * Model qualifiers — words that almost always indicate a product VARIANT.
+ * These are distinct from descriptive words like "ultra" or "mini" which
+ * can be part of a product's base name (e.g. "Ultra Mini LED").
  */
-function classifyToken(word, brand, product) {
+const VARIANT_QUALIFIERS = new Set([
+  "pro", "plus", "max", "lite", "se", "air", "neo", "evo",
+  "slim", "elite", "prime", "basic", "advanced", "premium", "classic",
+  "ii", "iii", "iv", "gen", "mk", "gt", "xl", "xs", "xt",
+]);
+
+/**
+ * Classify a token for weighting purposes.
+ * - brand:     3× — the manufacturer name
+ * - variant:   3× — variant qualifiers (Pro/Plus/Max) that differentiate product lines
+ * - prodname:  2.5× — core product name words (positions 1-3 after brand in title)
+ * - spec:      2× — numbers and units (64gb, 500ml, 530lm)
+ * - generic:   1× — common descriptive words
+ */
+function classifyToken(word, brand) {
   const brandTokens = brand ? tokenize(brand) : [];
-  if (brandTokens.includes(word)) return "brand"; // 3x weight
+  if (brandTokens.includes(word)) return "brand";
+
+  // Variant qualifiers — always critical
+  if (VARIANT_QUALIFIERS.has(word)) return "variant";
 
   // Spec-like: numbers, units, model numbers
-  if (/^\d+/.test(word)) return "spec"; // 2x weight (e.g., 64gb, 500ml)
-  if (/^(gb|tb|mb|ml|cl|kg|mm|cm|watt|mah|rpm)$/i.test(word)) return "spec";
+  if (/^\d+/.test(word)) return "spec";
+  if (/^(gb|tb|mb|ml|cl|kg|mm|cm|watt|mah|rpm|lm|lumen)$/i.test(word)) return "spec";
 
-  return "generic"; // 1x weight
+  return "generic";
 }
 
 /**
- * Weighted title similarity with brand/spec boosting.
+ * Extract the "product name" words from a title — the core identity words
+ * that appear right after the brand. These get extra weight because they
+ * identify WHICH product it is (e.g. "OClip Pro" in "OLIGHT OClip Pro Ultra Mini LED...").
+ *
+ * Returns a Set of tokens that are considered the product name.
+ */
+function extractProductNameTokens(title, brand) {
+  const tokens = tokenize(title);
+  const brandTokens = brand ? new Set(tokenize(brand)) : new Set();
+
+  // Skip brand tokens at the start, then take the next 2 meaningful words
+  // as the product name. Stop at clearly descriptive transitions.
+  const DESCRIPTION_BOUNDARY = new Set([
+    // Tech descriptors
+    "led", "usb", "bluetooth", "wireless", "draadloos", "oplaadbaar",
+    "rechargeable", "waterproof", "waterdicht", "stainless", "portable",
+    "draagbaar", "electric", "elektrisch", "elektrische", "digital", "digitaal",
+    // Size/quality adjectives (NOT product names)
+    "ultra", "mini", "micro", "nano", "super", "mega", "compact",
+    "klein", "groot", "large", "small", "medium",
+    // Product category words (NL + EN)
+    "zaklamp", "koptelefoon", "luidspreker", "toetsenbord", "oplader",
+    "flashlight", "headphones", "speaker", "keyboard", "charger",
+    "monitor", "printer", "camera", "tablet", "lamp", "horloge",
+    // Connective / descriptive
+    "voor", "for", "met", "with", "gemaakt", "made",
+  ]);
+
+  const prodNameTokens = new Set();
+  let collected = 0;
+
+  for (const token of tokens) {
+    if (brandTokens.has(token)) continue; // skip brand words
+    if (collected >= 2) break;
+    if (DESCRIPTION_BOUNDARY.has(token)) break; // hit descriptive zone
+    prodNameTokens.add(token);
+    collected++;
+  }
+
+  return prodNameTokens;
+}
+
+/**
+ * Weighted title similarity with positional product-name boosting.
  * Returns { score: 0–1, matchedTerms: [], missingTerms: [], differingSpecs: [] }
+ *
+ * Weighting strategy:
+ * - Brand words: 3×
+ * - Variant qualifiers (pro/plus/max): 3×
+ * - Product name words (first 3 after brand): 2.5×
+ * - Spec words (numbers/units): 2×
+ * - Everything else: 1×
+ *
+ * Also applies a penalty when bol title contains variant/spec terms
+ * not present in the Amazon title (suggests a different product variant).
  */
 function weightedSimilarity(amazonTitle, bolTitle, brand) {
   const aTokens = tokenize(amazonTitle);
@@ -227,14 +314,24 @@ function weightedSimilarity(amazonTitle, bolTitle, brand) {
 
   if (!aTokens.length || !bTokens.length) return { score: 0, matchedTerms: [], missingTerms: [], differingSpecs: [] };
 
+  const prodNameTokens = extractProductNameTokens(amazonTitle, brand);
   const bSet = new Set(bTokens);
   let matchedWeight = 0, totalWeight = 0;
   const matchedTerms = [], missingTerms = [], differingSpecs = [];
 
   for (const word of aTokens) {
     const cls = classifyToken(word, brand);
-    const multiplier = cls === "brand" ? 3 : cls === "spec" ? 2 : 1;
-    const baseWeight = Math.min(word.length, 8);
+    let multiplier;
+    if (cls === "brand") multiplier = 3;
+    else if (cls === "variant") multiplier = 3;
+    else if (prodNameTokens.has(word)) multiplier = 2.5;
+    else if (cls === "spec") multiplier = 2;
+    else multiplier = 1;
+
+    // Numeric tokens get minimum base weight of 3 — "6" differentiates Flip 6 from Flip 5
+    const baseWeight = /^\d+$/.test(word)
+      ? Math.max(3, Math.min(word.length, 8))
+      : Math.min(word.length, 8);
     const weight = baseWeight * multiplier;
     totalWeight += weight;
 
@@ -257,11 +354,35 @@ function weightedSimilarity(amazonTitle, bolTitle, brand) {
 
     if (!partialFound) {
       missingTerms.push(word);
-      if (cls === "spec") differingSpecs.push(word);
+      if (cls === "spec" || cls === "variant" || prodNameTokens.has(word)) {
+        differingSpecs.push(word);
+      }
     }
   }
 
-  const score = totalWeight > 0 ? matchedWeight / totalWeight : 0;
+  // Bidirectional check: penalize if bol title has variant/spec terms NOT in Amazon title.
+  const aSet = new Set(aTokens);
+  const bolProdNameTokens = extractProductNameTokens(bolTitle, brand);
+  let extraPenalty = 0;
+  for (const bWord of bTokens) {
+    if (!aSet.has(bWord)) {
+      const cls = classifyToken(bWord, brand);
+      if (cls === "variant") {
+        // Bol has a variant qualifier not in Amazon → likely different product line
+        extraPenalty += Math.min(bWord.length, 8) * 2;
+      } else if (cls === "spec") {
+        extraPenalty += Math.min(bWord.length, 8) * 0.5;
+      } else if (bolProdNameTokens.has(bWord)) {
+        // Bol product name word not in Amazon → different product
+        extraPenalty += Math.min(bWord.length, 8) * 1.5;
+      }
+    }
+  }
+
+  const rawScore = totalWeight > 0 ? matchedWeight / totalWeight : 0;
+  const penaltyFactor = totalWeight > 0 ? Math.max(0, 1 - (extraPenalty / (totalWeight * 0.5))) : 1;
+  const score = rawScore * penaltyFactor;
+
   return { score, matchedTerms, missingTerms, differingSpecs };
 }
 
