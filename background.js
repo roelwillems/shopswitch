@@ -28,7 +28,7 @@ async function loadPersisted(tabId) {
 const AFFILIATE_CODE = ""; // e.g. "shopswitch-21"
 
 async function getSettings() {
-  const defaults = { affiliateEnabled: false };
+  const defaults = { affiliateEnabled: false, badgeStyle: "neutral" };
   const stored = await chrome.storage.sync.get("shopswitch_settings");
   return { ...defaults, ...(stored.shopswitch_settings || {}) };
 }
@@ -52,6 +52,7 @@ const badge = {
   found:    (t) => setBadge(t, "✓", "#0DAA4C"),
   cheaper:  (t) => setBadge(t, "✓", "#0DAA4C"),
   pricier:  (t) => setBadge(t, "✓", "#D94040"),
+  noPrice:  (t) => setBadge(t, "✓", "#999"),
   approx:   (t) => setBadge(t, "≈", "#7C3AED"),
   notFound: (t) => setBadge(t, "✗", "#999"),
   error:    (t) => setBadge(t, "!", "#E74C3C"),
@@ -459,12 +460,19 @@ function extractQuantities(title) {
   const len = t.match(/(\d+[.,]?\d*)\s*(mm|cm|m|inch|")\b/i);
   if (len) { let v = parseFloat(len[1].replace(",",".")); const u = len[2].toLowerCase(); if (u==="m"&&v<100) v*=100; if (u==="mm") v/=10; if (u==="inch"||u==='"') v*=2.54; q.length_cm = Math.round(v*100)/100; }
 
+  const watt = t.match(/(\d+[.,]?\d*)\s*(w|watt)\b/i);
+  if (watt) { const v = parseFloat(watt[1].replace(",",".")); if (v > 0 && v < 10000) q.wattage_w = v; }
+
+  const mah = t.match(/(\d+)\s*mah\b/i);
+  if (mah) { const v = parseInt(mah[1]); if (v > 0) q.battery_mah = v; }
+
   return q;
 }
 
 const SPEC_LABELS = {
   storage_gb: "Storage", weight_g: "Weight", volume_ml: "Volume",
   pack_count: "Pack size", length_cm: "Size",
+  wattage_w: "Wattage", battery_mah: "Battery",
 };
 
 function formatSpecValue(key, val) {
@@ -473,6 +481,8 @@ function formatSpecValue(key, val) {
   if (key === "volume_ml") return val >= 1000 ? `${(val/1000).toFixed(1)}L` : `${val}ml`;
   if (key === "pack_count") return `${val}x`;
   if (key === "length_cm") return `${val}cm`;
+  if (key === "wattage_w") return `${val}W`;
+  if (key === "battery_mah") return `${val}mAh`;
   return String(val);
 }
 
@@ -519,6 +529,58 @@ function analyzeMatchType(amazonTitle, bolTitle) {
   }
 
   return { type: hasMismatch ? "approximate" : "exact", specDiffs };
+}
+
+/**
+ * Compute spec compatibility factor (0.0–1.0) between two titles.
+ * For each spec present in both, ratio = min/max (symmetric, 0–1).
+ * Missing pack_count treated as 1. No comparable specs → 1.0 (no penalty).
+ */
+function computeSpecCompatibility(amazonTitle, bolTitle) {
+  const aq = extractQuantities(amazonTitle);
+  const bq = extractQuantities(bolTitle);
+
+  // Treat missing pack_count as 1
+  if (("pack_count" in aq) && !("pack_count" in bq)) bq.pack_count = 1;
+  if (("pack_count" in bq) && !("pack_count" in aq)) aq.pack_count = 1;
+
+  const allKeys = new Set([...Object.keys(aq), ...Object.keys(bq)]);
+  const ratios = [];
+
+  for (const key of allKeys) {
+    if (key in aq && key in bq) {
+      const a = aq[key], b = bq[key];
+      if (a > 0 && b > 0) ratios.push(Math.min(a, b) / Math.max(a, b));
+    }
+  }
+
+  return ratios.length > 0 ? ratios.reduce((s, v) => s + v, 0) / ratios.length : 1.0;
+}
+
+/**
+ * Compute composite rank score combining text similarity, spec compatibility, and price proximity.
+ * rankScore = matchScore × specFactor × priceFactor
+ */
+function computeRankScore(result, amazonTitle, amazonPrice) {
+  const matchFactor = (result.matchScore || 0) / 100;
+  const specFactor = computeSpecCompatibility(amazonTitle, result.title);
+
+  let priceFactor = 1.0;
+  if (result.price != null && amazonPrice != null && result.price > 0 && amazonPrice > 0) {
+    const ratio = Math.max(result.price, amazonPrice) / Math.min(result.price, amazonPrice);
+    if (ratio <= 2.0) {
+      priceFactor = 1.0;
+    } else if (ratio <= 4.0) {
+      // Linear interpolation: 2.0 → 1.0, 4.0 → 0.6
+      priceFactor = 1.0 - (ratio - 2.0) * (0.4 / 2.0);
+    } else {
+      priceFactor = 0.5;
+    }
+  }
+
+  result.rankScore = Math.round(matchFactor * specFactor * priceFactor * 1000) / 1000;
+  console.log(`[${SS}] rankScore=${result.rankScore} (match=${matchFactor.toFixed(2)}, spec=${specFactor.toFixed(2)}, price=${priceFactor.toFixed(2)}) "${result.title.substring(0, 50)}"`);
+  return result.rankScore;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -630,17 +692,31 @@ async function searchBolCom(product) {
       if (!byUrl[key] || c.matchScore > byUrl[key].matchScore) byUrl[key] = c;
     }
 
-    const deduped = Object.values(byUrl).sort((a, b) => b.matchScore - a.matchScore);
-    const best = deduped[0];
-    const alternative = deduped.length > 1 ? deduped[1] : null;
+    // Compute initial rank scores (some candidates may already have prices from tryBolSearch)
+    const deduped = Object.values(byUrl);
+    for (const r of deduped) computeRankScore(r, product.title || "", product.price);
+    deduped.sort((a, b) => b.rankScore - a.rankScore);
+
+    let best = deduped[0];
+    let alternative = deduped.length > 1 ? deduped[1] : null;
 
     // Ensure prices are fetched for the picks (may not have been in a top-2 slice)
     const toFetch = [best, alternative].filter(r => r && r.price == null);
     if (toFetch.length) {
       await Promise.allSettled(toFetch.map(async (r) => {
-        const price = await fetchBolProductPrice(r.url);
-        if (price !== null) r.price = price;
+        const result = await fetchBolProductPrice(r.url);
+        if (result !== null) {
+          r.price = result.price;
+          r.available = result.available;
+        }
       }));
+
+      // Re-compute rank scores now that prices are available, and swap if needed
+      computeRankScore(best, product.title || "", product.price);
+      if (alternative) computeRankScore(alternative, product.title || "", product.price);
+      if (alternative && alternative.rankScore > best.rankScore) {
+        [best, alternative] = [alternative, best];
+      }
     }
 
     return {
@@ -687,8 +763,11 @@ async function tryBolSearch(query, label, product, brand, isProductCode, collect
     // Fetch prices for top results
     const topN = collectMode ? bolData.results.slice(0, 2) : bolData.results.slice(0, 3);
     await Promise.allSettled(topN.map(async (r) => {
-      const price = await fetchBolProductPrice(r.url);
-      if (price !== null) r.price = price;
+      const result = await fetchBolProductPrice(r.url);
+      if (result !== null) {
+        r.price = result.price;
+        r.available = result.available;
+      }
     }));
 
     // Analyze match type
@@ -699,8 +778,9 @@ async function tryBolSearch(query, label, product, brand, isProductCode, collect
     }
 
     if (!collectMode) {
-      // Pick best + alternative
-      bolData.results.sort((a, b) => b.matchScore - a.matchScore);
+      // Compute composite rank scores and sort by them
+      for (const r of bolData.results) computeRankScore(r, amazonTitle, product.price);
+      bolData.results.sort((a, b) => b.rankScore - a.rankScore);
       bolData.alternative = bolData.results.length > 1 ? bolData.results[1] : null;
       bolData.results = [bolData.results[0]];
     }
@@ -750,6 +830,7 @@ async function fetchBolProductPrice(productUrl) {
     const html = await resp.text();
 
     // JSON-LD
+    let available = true; // default: assume available if no signal found
     for (const jm of [...html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)]) {
       try {
         const data = JSON.parse(jm[1]);
@@ -758,8 +839,14 @@ async function fetchBolProductPrice(productUrl) {
           if (item["@type"] === "Product" && item.offers) {
             const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
             for (const o of offers) {
+              // Check availability from Schema.org stock values
+              if (o.availability) {
+                const avail = o.availability.replace(/^https?:\/\/schema\.org\//, "");
+                const inStockValues = ["InStock", "OnlineOnly", "PreOrder", "LimitedAvailability"];
+                available = inStockValues.includes(avail);
+              }
               const p = parseFloat(o.price || o.lowPrice);
-              if (!isNaN(p) && p > 0) return p;
+              if (!isNaN(p) && p > 0) return { price: p, available };
             }
           }
         }
@@ -768,17 +855,17 @@ async function fetchBolProductPrice(productUrl) {
 
     // Meta tags
     const metaM = html.match(/<meta[^>]*(?:property|name)="(?:og:price:amount|product:price:amount)"[^>]*content="([^"]+)"/i);
-    if (metaM) { const p = parseFloat(metaM[1].replace(",",".")); if (!isNaN(p) && p > 0) return p; }
+    if (metaM) { const p = parseFloat(metaM[1].replace(",",".")); if (!isNaN(p) && p > 0) return { price: p, available }; }
 
     // Promo price
     const promoM = html.match(/class="promo-price"[^>]*>(\d{1,5})<\/span>\s*<sup[^>]*>(\d{2})<\/sup>/i);
-    if (promoM) { const p = parseFloat(`${promoM[1]}.${promoM[2]}`); if (!isNaN(p) && p > 0) return p; }
+    if (promoM) { const p = parseFloat(`${promoM[1]}.${promoM[2]}`); if (!isNaN(p) && p > 0) return { price: p, available }; }
 
     // Script price
     const scriptM = html.match(/"(?:currentPrice|price|salePrice)":\s*["]?(\d+[.,]\d{2})["]?/i);
-    if (scriptM) { const p = parseFloat(scriptM[1].replace(",",".")); if (!isNaN(p) && p > 0) return p; }
+    if (scriptM) { const p = parseFloat(scriptM[1].replace(",",".")); if (!isNaN(p) && p > 0) return { price: p, available }; }
 
-    return null;
+    return { price: null, available };
   } catch (err) { return null; }
 }
 
@@ -819,10 +906,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const bp = best.price, ap = product.price;
 
         if (mt === "approximate") badge.approx(tabId);
-        else if (bp != null && ap != null) {
-          if (bp < ap) badge.cheaper(tabId);
-          else if (bp > ap) badge.pricier(tabId);
-          else badge.cheaper(tabId);
+        else if (settings.badgeStyle === "price") {
+          if (bp != null && ap != null) {
+            if (bp < ap) badge.cheaper(tabId);
+            else if (bp > ap) badge.pricier(tabId);
+            else badge.found(tabId);
+          } else badge.noPrice(tabId);
         } else badge.found(tabId);
       } else badge.notFound(tabId);
 

@@ -186,6 +186,21 @@
   }
   .match-card:hover .arrow-icon { color: var(--ss-blue); }
 
+  /* ── Unavailable card ── */
+  .match-card.unavailable { opacity: 0.55; }
+  .match-card.unavailable:hover {
+    border-color: var(--ss-gray);
+    box-shadow: 0 2px 8px rgba(100, 116, 139, 0.1);
+  }
+  .match-card.unavailable:hover .arrow-icon { color: var(--ss-gray); }
+  .unavailable-badge {
+    font-size: 10px; font-weight: 600;
+    padding: 2px 7px; border-radius: 10px;
+    background: #F1F5F9; color: var(--ss-gray);
+  }
+  .status-bar.found-unavailable { background: #F1F5F9; color: var(--ss-gray); }
+  .found-unavailable .status-dot { background: var(--ss-gray); }
+
   /* ── Spec diff banner ── */
   .spec-diff-banner {
     margin-top: 8px; padding: 7px 10px;

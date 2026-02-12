@@ -63,18 +63,22 @@ function renderMatch(result, amazonPrice, affiliateEnabled) {
     : `${result.matchScore}% match`;
 
   const linkUrl = result.affiliateUrl || result.url;
+  const isUnavailable = result.available === false;
+  const cardClass = isUnavailable ? "match-card unavailable" : "match-card";
 
   // Price comparison row: show bol price + amazon price side by side + diff
   const bolPriceStr = formatPrice(result.price);
   const colorClass = priceColorClass(result.price, amazonPrice);
-  const diffStr = priceDiffHtml(result.price, amazonPrice);
-  const amazonRef = (amazonPrice != null && result.price != null)
+  const diffStr = isUnavailable ? "" : priceDiffHtml(result.price, amazonPrice);
+  const amazonRef = (!isUnavailable && amazonPrice != null && result.price != null)
     ? `<span class="amazon-ref-price">Amazon: ${formatPrice(amazonPrice)}</span>` : "";
+  const unavailBadge = isUnavailable ? `<span class="unavailable-badge">Not available</span>` : "";
 
   return `
-    <div class="match-card" data-url="${escAttr(linkUrl)}">
+    <div class="${cardClass}" data-url="${escAttr(linkUrl)}">
       <div class="card-header">
         <span class="store-badge">bol.</span>
+        ${unavailBadge}
         <span class="match-pct ${matchClass}">${matchLabel}</span>
       </div>
       <div class="product-title">${escHtml(result.title)}</div>
@@ -199,7 +203,10 @@ function render(data) {
   const mt = best?.matchType || "exact";
 
   let statusClass, statusText;
-  if (mt === "approximate") {
+  if (best?.available === false) {
+    statusClass = "found-unavailable";
+    statusText = "Found on bol. — currently unavailable";
+  } else if (mt === "approximate") {
     statusClass = "found-approx";
     statusText = "Similar product found — specs may differ";
   } else if (bp != null && ap != null) {
