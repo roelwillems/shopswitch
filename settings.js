@@ -2,7 +2,6 @@
 
 const affiliateEnabled = document.getElementById("affiliateEnabled");
 const badgePrice = document.getElementById("badgePrice");
-const saveBtn = document.getElementById("saveBtn");
 const savedMsg = document.getElementById("savedMsg");
 
 // Load saved settings
@@ -12,8 +11,8 @@ chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, (settings) => {
   badgePrice.checked = settings.badgeStyle === "price";
 });
 
-// Save
-saveBtn.addEventListener("click", () => {
+// Auto-save on any toggle change
+function saveSettings() {
   const settings = {
     affiliateEnabled: affiliateEnabled.checked,
     badgeStyle: badgePrice.checked ? "price" : "neutral",
@@ -22,4 +21,7 @@ saveBtn.addEventListener("click", () => {
     savedMsg.classList.add("show");
     setTimeout(() => savedMsg.classList.remove("show"), 2000);
   });
-});
+}
+
+affiliateEnabled.addEventListener("change", saveSettings);
+badgePrice.addEventListener("change", saveSettings);
