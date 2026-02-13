@@ -104,6 +104,11 @@
     // Detect books: ISBN fields, isbn_feature_div, or book:isbn meta tag
     info.isBook = !!(info.isbn10 || hasIsbnField || document.querySelector('#isbn_feature_div, meta[property="book:isbn"]'));
 
+    // Strip genre tags from book titles (e.g. "Bloedkoraal: thriller" → "Bloedkoraal")
+    if (info.isBook && info.title) {
+      info.title = info.title.replace(/:\s*(thriller|roman|novelle|gedichten|verhalen|biografie|autobiografie|memoir|essays|po[eë]zie|novel|poetry|fiction|nonfiction|non-fiction)\s*$/i, "").trim();
+    }
+
     return info;
   }
 
