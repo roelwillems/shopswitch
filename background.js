@@ -139,6 +139,12 @@ const EN_NL_DICT = {
   "ultra": "ultra",
 };
 
+// Auto-generate reverse NL → EN dictionary
+const NL_EN_DICT = {};
+for (const [en, nl] of Object.entries(EN_NL_DICT)) {
+  if (nl !== en) NL_EN_DICT[nl] = en;
+}
+
 /**
  * Translate a search query from English to Dutch using dictionary.
  * Keeps brand names, model numbers, and untranslatable terms intact.
@@ -151,6 +157,24 @@ function translateToNL(query) {
     if (EN_NL_DICT[lower] && EN_NL_DICT[lower] !== lower) {
       translated = true;
       return EN_NL_DICT[lower];
+    }
+    return word;
+  });
+  return translated ? result.join(" ") : null; // null = no change
+}
+
+/**
+ * Translate a search query from Dutch to English using reverse dictionary.
+ * Keeps brand names, model numbers, and untranslatable terms intact.
+ */
+function translateToEN(query) {
+  const words = query.split(/\s+/);
+  let translated = false;
+  const result = words.map((word) => {
+    const lower = word.toLowerCase();
+    if (NL_EN_DICT[lower] && NL_EN_DICT[lower] !== lower) {
+      translated = true;
+      return NL_EN_DICT[lower];
     }
     return word;
   });
@@ -207,6 +231,20 @@ const STOP_WORDS = new Set([
   "it","its","this","that","from","-","–","|","/","&","+",
 ]);
 
+const DESCRIPTOR_WORDS = new Set([
+  // Product categories (NL)
+  "smartwatch", "horloge", "telefoon", "smartphone", "koptelefoon",
+  "luidspreker", "toetsenbord", "oplader", "stofzuiger", "koelkast",
+  "tablet", "laptop", "kabel", "adapter", "muis",
+  // Product categories (EN)
+  "phone", "headphones", "earbuds", "speaker", "keyboard",
+  "charger", "vacuum", "fridge", "cable", "mouse",
+  // Descriptive parts (NL)
+  "kast", "bandje", "sportbandje", "armband", "polsband", "hoes", "hoesje",
+  // Descriptive parts (EN)
+  "case", "strap", "band", "wristband", "sleeve",
+]);
+
 function tokenize(text) {
   return text.toLowerCase()
     .replace(/[™®©\(\)\[\]\{\}]/g, " ")
@@ -234,11 +272,12 @@ const VARIANT_QUALIFIERS = new Set([
 
 /**
  * Classify a token for weighting purposes.
- * - brand:     3× — the manufacturer name
- * - variant:   3× — variant qualifiers (Pro/Plus/Max) that differentiate product lines
- * - prodname:  2.5× — core product name words (positions 1-3 after brand in title)
- * - spec:      2× — numbers and units (64gb, 500ml, 530lm)
- * - generic:   1× — common descriptive words
+ * - brand:      3× — the manufacturer name
+ * - variant:    3× — variant qualifiers (Pro/Plus/Max) that differentiate product lines
+ * - prodname:   2.5× — core product name words (positions 1-3 after brand in title)
+ * - spec:       2× — numbers and units (64gb, 500ml, 530lm)
+ * - descriptor: 0.3× — product category/part words (smartwatch, kast, bandje)
+ * - generic:    1× — other descriptive words
  */
 function classifyToken(word, brand) {
   const brandTokens = brand ? tokenize(brand) : [];
@@ -251,6 +290,7 @@ function classifyToken(word, brand) {
   if (/^\d+/.test(word)) return "spec";
   if (/^(gb|tb|mb|ml|cl|kg|mm|cm|watt|mah|rpm|lm|lumen)$/i.test(word)) return "spec";
 
+  if (DESCRIPTOR_WORDS.has(word)) return "descriptor";
   return "generic";
 }
 
@@ -329,6 +369,7 @@ function weightedSimilarity(amazonTitle, bolTitle, brand) {
     else if (cls === "variant") multiplier = 3;
     else if (prodNameTokens.has(word)) multiplier = 2.5;
     else if (cls === "spec") multiplier = 2;
+    else if (cls === "descriptor") multiplier = 0.3;
     else multiplier = 1;
 
     // Numeric tokens get minimum base weight of 3 — "6" differentiates Flip 6 from Flip 5
@@ -394,18 +435,35 @@ function weightedSimilarity(amazonTitle, bolTitle, brand) {
  * return the best one with metadata.
  */
 function crossLangSimilarity(amazonTitle, bolTitle, brand) {
-  const enResult = weightedSimilarity(amazonTitle, bolTitle, brand);
-  enResult.lang = "en";
+  // Strategy 1: Direct comparison
+  let best = weightedSimilarity(amazonTitle, bolTitle, brand);
+  best.lang = "direct";
 
-  // Try NL translation of the Amazon title
-  const nlTitle = translateToNL(amazonTitle);
-  if (nlTitle) {
-    const nlResult = weightedSimilarity(nlTitle, bolTitle, brand);
-    nlResult.lang = "nl";
-    if (nlResult.score > enResult.score) return nlResult;
+  // Strategy 2: Amazon → NL vs bol (helps when Amazon is English, bol is Dutch)
+  const amazonNL = translateToNL(amazonTitle);
+  if (amazonNL) {
+    const r = weightedSimilarity(amazonNL, bolTitle, brand);
+    r.lang = "amazon-nl";
+    if (r.score > best.score) best = r;
   }
 
-  return enResult;
+  // Strategy 3: Amazon → EN vs bol (helps when Amazon is Dutch)
+  const amazonEN = translateToEN(amazonTitle);
+  if (amazonEN) {
+    const r = weightedSimilarity(amazonEN, bolTitle, brand);
+    r.lang = "amazon-en";
+    if (r.score > best.score) best = r;
+  }
+
+  // Strategy 4: Amazon vs bol → NL (helps when bol is English)
+  const bolNL = translateToNL(bolTitle);
+  if (bolNL) {
+    const r = weightedSimilarity(amazonTitle, bolNL, brand);
+    r.lang = "bol-nl";
+    if (r.score > best.score) best = r;
+  }
+
+  return best;
 }
 
 /**
@@ -630,6 +688,40 @@ async function lookupEanViaUpcItemDb(product) {
 // BOL.COM SEARCH ENGINE
 // ═══════════════════════════════════════════════════════════════
 
+/**
+ * Build a minimal "core" query: brand + product-name tokens + version numbers.
+ * Strips away descriptors and generic words to get the essential product identity.
+ * e.g. "Apple Watch SE 3 GPS 40 mm Smartwatch met kast van sterrenlicht" → "Apple Watch SE 3"
+ */
+function buildCoreQuery(product) {
+  const brand = cleanBrand(product.brand);
+  const tokens = tokenize(product.title || "");
+  const brandTokens = brand ? new Set(tokenize(brand)) : new Set();
+
+  const coreTokens = [];
+
+  // Always include brand tokens first
+  for (const t of tokens) {
+    if (brandTokens.has(t)) {
+      coreTokens.push(t);
+    }
+  }
+
+  // Then collect non-brand tokens that are variant/spec/prodname — stop at first descriptor or generic
+  let pastBrand = false;
+  for (const t of tokens) {
+    if (brandTokens.has(t)) { pastBrand = true; continue; }
+    if (!pastBrand && coreTokens.length === 0) pastBrand = true; // no brand in title
+
+    const cls = classifyToken(t, brand);
+    if (cls === "generic" || cls === "descriptor") break;
+    coreTokens.push(t);
+  }
+
+  const query = coreTokens.join(" ");
+  return query.length >= 3 ? query : null;
+}
+
 function buildSearchQueries(product) {
   const queries = [];
   if (product.ean) queries.push({ query: product.ean, label: "EAN", isProductCode: true });
@@ -650,6 +742,17 @@ function buildSearchQueries(product) {
     queries.push({ query: broad.trim(), label: "broad-EN", isProductCode: false });
     const nlBroad = translateToNL(broad.trim());
     if (nlBroad) queries.push({ query: nlBroad, label: "broad-NL", isProductCode: false });
+  }
+
+  // Core query fallback: minimal brand + product name + version
+  const core = buildCoreQuery(product);
+  if (core) {
+    const existing = new Set(queries.filter(q => !q.isProductCode).map(q => q.query.toLowerCase()));
+    if (!existing.has(core.toLowerCase())) {
+      queries.push({ query: core, label: "core-EN", isProductCode: false });
+      const nlCore = translateToNL(core);
+      if (nlCore) queries.push({ query: nlCore, label: "core-NL", isProductCode: false });
+    }
   }
 
   return queries;
@@ -1029,6 +1132,15 @@ async function searchLibris(product) {
   const broad = cleanTitle(product.title || "", 6);
   if (broad.trim() && broad.trim() !== specific.trim()) {
     queries.push({ query: broad.trim(), label: "Libris-broad", isProductCode: false });
+  }
+
+  // Core query fallback
+  const core = buildCoreQuery(product);
+  if (core) {
+    const existing = new Set(queries.filter(q => !q.isProductCode).map(q => q.query.toLowerCase()));
+    if (!existing.has(core.toLowerCase())) {
+      queries.push({ query: core, label: "Libris-core", isProductCode: false });
+    }
   }
 
   console.log(`[${SS}] Libris cascade:`, queries.map(q => `${q.label}: "${q.query}"`));
