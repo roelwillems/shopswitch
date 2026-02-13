@@ -56,7 +56,7 @@ Click the ⚙ icon in the popup to configure:
 
 ShopSwitch is built to expand across the EU. Future plans include:
 
-- 🏪 Coolblue, MediaMarkt, Zalando integration
+- 🏪 Expand with other Dutch and EU shop integration
 - 🇪🇺 Multi-country support via shopswitch.eu
 - 📊 Price history tracking
 - 🔔 Price drop notifications
