@@ -13,7 +13,7 @@ ShopSwitch is a Chrome extension that automatically finds equivalent products on
 - **Price comparison** with savings/premium display in € and %
 - **Spec difference detection** — highlights when quantities, sizes, or pack counts differ
 - **Alternative matches** — shows a secondary match when available
-- **Affiliate support** — optional referral links that support development at no cost to you
+- **Affiliate support** — possibly added in the future, optional referral links that support development at no cost to you
 
 ## How it works
 
@@ -49,7 +49,7 @@ Results are validated against the Amazon product using weighted scoring that pri
 
 Click the ⚙ icon in the popup to configure:
 
-- **Affiliate support** — Enable referral links to support ShopSwitch development (costs you nothing)
+- Disabled currently **Affiliate support** — Enable referral links to support ShopSwitch development (costs you nothing)
 - **Stores** — Currently bol.com; more EU stores coming soon
 
 ## Roadmap
