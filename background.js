@@ -700,23 +700,41 @@ async function searchBolCom(product) {
     let best = deduped[0];
     let alternative = deduped.length > 1 ? deduped[1] : null;
 
-    // Ensure prices are fetched for the picks (may not have been in a top-2 slice)
+    // Ensure details are fetched for the picks (may not have been in a top-2 slice)
+    const amazonTitle = product.title || "";
+    const brand = cleanBrand(product.brand);
     const toFetch = [best, alternative].filter(r => r && r.price == null);
     if (toFetch.length) {
       await Promise.allSettled(toFetch.map(async (r) => {
-        const result = await fetchBolProductPrice(r.url);
-        if (result !== null) {
-          r.price = result.price;
-          r.available = result.available;
+        const details = await fetchBolProductDetails(r.url);
+        if (details !== null) {
+          r.price = details.price;
+          r.available = details.available;
+          if (details.fullTitle) {
+            r.title = details.fullTitle;
+            const sim = crossLangSimilarity(amazonTitle, r.title, brand);
+            r.matchScore = Math.round(sim.score * 100);
+            r.matchLang = sim.lang;
+            r.differingSpecs = sim.differingSpecs;
+            r.missingTerms = sim.missingTerms;
+            console.log(`[${SS}] Re-scored with full title: "${r.title.substring(0, 60)}…" → ${r.matchScore}%`);
+          }
         }
       }));
+    }
 
-      // Re-compute rank scores now that prices are available, and swap if needed
-      computeRankScore(best, product.title || "", product.price);
-      if (alternative) computeRankScore(alternative, product.title || "", product.price);
-      if (alternative && alternative.rankScore > best.rankScore) {
-        [best, alternative] = [alternative, best];
-      }
+    // Re-compute rank scores with updated titles/prices, and swap if needed
+    computeRankScore(best, amazonTitle, product.price);
+    if (alternative) computeRankScore(alternative, amazonTitle, product.price);
+    if (alternative && alternative.rankScore > best.rankScore) {
+      [best, alternative] = [alternative, best];
+    }
+
+    // Analyze match type with (potentially updated) titles
+    for (const r of [best, alternative].filter(Boolean)) {
+      const analysis = analyzeMatchType(amazonTitle, r.title);
+      r.matchType = analysis.type;
+      r.specDiffs = analysis.specDiffs;
     }
 
     return {
@@ -760,13 +778,23 @@ async function tryBolSearch(query, label, product, brand, isProductCode, collect
     console.log(`[${SS}] ${bolData.results.length} validated via ${label}`);
     bolData.searchMethod = label;
 
-    // Fetch prices for top results
+    // Fetch product details (price, availability, full title) for top results
     const topN = collectMode ? bolData.results.slice(0, 2) : bolData.results.slice(0, 3);
     await Promise.allSettled(topN.map(async (r) => {
-      const result = await fetchBolProductPrice(r.url);
-      if (result !== null) {
-        r.price = result.price;
-        r.available = result.available;
+      const details = await fetchBolProductDetails(r.url);
+      if (details !== null) {
+        r.price = details.price;
+        r.available = details.available;
+        if (details.fullTitle) {
+          r.title = details.fullTitle;
+          // Re-score with full title for more accurate matching
+          const sim = crossLangSimilarity(amazonTitle, r.title, brand);
+          r.matchScore = Math.round(sim.score * 100);
+          r.matchLang = sim.lang;
+          r.differingSpecs = sim.differingSpecs;
+          r.missingTerms = sim.missingTerms;
+          console.log(`[${SS}] Re-scored with full title: "${r.title.substring(0, 60)}…" → ${r.matchScore}%`);
+        }
       }
     }));
 
@@ -817,7 +845,7 @@ function parseBolResults(html, searchUrl) {
   return { results, searchUrl, query: decodeURIComponent(searchUrl.split("searchtext=")[1] || "") };
 }
 
-async function fetchBolProductPrice(productUrl) {
+async function fetchBolProductDetails(productUrl) {
   try {
     const resp = await fetch(productUrl, {
       headers: {
@@ -829,43 +857,62 @@ async function fetchBolProductPrice(productUrl) {
     if (!resp.ok) return null;
     const html = await resp.text();
 
-    // JSON-LD
+    let price = null;
     let available = true; // default: assume available if no signal found
+    let fullTitle = null;
+
+    // JSON-LD
     for (const jm of [...html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)]) {
       try {
         const data = JSON.parse(jm[1]);
         const items = Array.isArray(data) ? data : [data];
         for (const item of items) {
-          if (item["@type"] === "Product" && item.offers) {
-            const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
-            for (const o of offers) {
-              // Check availability from Schema.org stock values
-              if (o.availability) {
-                const avail = o.availability.replace(/^https?:\/\/schema\.org\//, "");
-                const inStockValues = ["InStock", "OnlineOnly", "PreOrder", "LimitedAvailability"];
-                available = inStockValues.includes(avail);
+          if (item["@type"] === "Product") {
+            if (item.name) fullTitle = item.name;
+            if (item.offers) {
+              const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
+              for (const o of offers) {
+                if (o.availability) {
+                  const avail = o.availability.replace(/^https?:\/\/schema\.org\//, "");
+                  const inStockValues = ["InStock", "OnlineOnly", "PreOrder", "LimitedAvailability"];
+                  available = inStockValues.includes(avail);
+                }
+                if (price == null) {
+                  const p = parseFloat(o.price || o.lowPrice);
+                  if (!isNaN(p) && p > 0) price = p;
+                }
               }
-              const p = parseFloat(o.price || o.lowPrice);
-              if (!isNaN(p) && p > 0) return { price: p, available };
             }
           }
         }
       } catch(e) {}
     }
 
-    // Meta tags
-    const metaM = html.match(/<meta[^>]*(?:property|name)="(?:og:price:amount|product:price:amount)"[^>]*content="([^"]+)"/i);
-    if (metaM) { const p = parseFloat(metaM[1].replace(",",".")); if (!isNaN(p) && p > 0) return { price: p, available }; }
+    // Fallback title: og:title meta tag
+    if (!fullTitle) {
+      const ogTitle = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i);
+      if (ogTitle) fullTitle = ogTitle[1].replace(/\s*\|\s*bol\.?$/i, "").trim();
+    }
 
-    // Promo price
-    const promoM = html.match(/class="promo-price"[^>]*>(\d{1,5})<\/span>\s*<sup[^>]*>(\d{2})<\/sup>/i);
-    if (promoM) { const p = parseFloat(`${promoM[1]}.${promoM[2]}`); if (!isNaN(p) && p > 0) return { price: p, available }; }
+    // Fallback price: meta tags
+    if (price == null) {
+      const metaM = html.match(/<meta[^>]*(?:property|name)="(?:og:price:amount|product:price:amount)"[^>]*content="([^"]+)"/i);
+      if (metaM) { const p = parseFloat(metaM[1].replace(",",".")); if (!isNaN(p) && p > 0) price = p; }
+    }
 
-    // Script price
-    const scriptM = html.match(/"(?:currentPrice|price|salePrice)":\s*["]?(\d+[.,]\d{2})["]?/i);
-    if (scriptM) { const p = parseFloat(scriptM[1].replace(",",".")); if (!isNaN(p) && p > 0) return { price: p, available }; }
+    // Fallback price: promo price
+    if (price == null) {
+      const promoM = html.match(/class="promo-price"[^>]*>(\d{1,5})<\/span>\s*<sup[^>]*>(\d{2})<\/sup>/i);
+      if (promoM) { const p = parseFloat(`${promoM[1]}.${promoM[2]}`); if (!isNaN(p) && p > 0) price = p; }
+    }
 
-    return { price: null, available };
+    // Fallback price: script price
+    if (price == null) {
+      const scriptM = html.match(/"(?:currentPrice|price|salePrice)":\s*["]?(\d+[.,]\d{2})["]?/i);
+      if (scriptM) { const p = parseFloat(scriptM[1].replace(",",".")); if (!isNaN(p) && p > 0) price = p; }
+    }
+
+    return { price, available, fullTitle };
   } catch (err) { return null; }
 }
 
