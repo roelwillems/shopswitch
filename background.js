@@ -861,14 +861,15 @@ async function fetchBolProductDetails(productUrl) {
     let available = true; // default: assume available if no signal found
     let fullTitle = null;
 
-    // JSON-LD
+    // JSON-LD — extract price, availability, and base title
+    let jsonLdTitle = null;
     for (const jm of [...html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)]) {
       try {
         const data = JSON.parse(jm[1]);
         const items = Array.isArray(data) ? data : [data];
         for (const item of items) {
           if (item["@type"] === "Product") {
-            if (item.name) fullTitle = item.name;
+            if (item.name) jsonLdTitle = item.name;
             if (item.offers) {
               const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
               for (const o of offers) {
@@ -888,11 +889,21 @@ async function fetchBolProductDetails(productUrl) {
       } catch(e) {}
     }
 
-    // Fallback title: og:title meta tag
+    // Full title: prefer <h1> (contains title + subtitle), fall back to JSON-LD name, then og:title
+    const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    if (h1Match) {
+      const h1Text = h1Match[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      if (h1Text.length >= 3) fullTitle = h1Text;
+    }
+    if (!fullTitle && jsonLdTitle) {
+      fullTitle = jsonLdTitle;
+    }
     if (!fullTitle) {
       const ogTitle = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i);
-      if (ogTitle) fullTitle = ogTitle[1].replace(/\s*\|\s*bol\.?$/i, "").trim();
+      if (ogTitle) fullTitle = ogTitle[1];
     }
+    // Strip pipe-separated metadata (EAN codes, categories like "| 9493213870 | Boeken")
+    if (fullTitle) fullTitle = fullTitle.replace(/\s*\|.*$/, "").trim();
 
     // Fallback price: meta tags
     if (price == null) {
