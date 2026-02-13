@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ShopSwitch — Find it locally, buy it smarter</title>
-<meta name="description" content="A free Chrome extension that instantly finds Amazon products on bol. Compare prices, check match quality, and switch to local EU stores with one click.">
+<meta name="description" content="A free Chrome extension that instantly finds Amazon products on local EU shops like bol. and Libris. Compare prices, check match quality, and switch with one click.">
 <meta property="og:title" content="ShopSwitch — Find it locally, buy it smarter">
-<meta property="og:description" content="Stop overpaying on Amazon. ShopSwitch finds the same product on bol. and shows you the price difference instantly.">
+<meta property="og:description" content="Stop overpaying on Amazon. ShopSwitch finds the same product on bol. and Libris, and shows you the price difference instantly.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://shopswitch.eu">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -235,8 +235,10 @@
   .demo-match { font-size: 10px; font-weight: 600; background: #DCFCE7; color: #15803D; padding: 1px 6px; border-radius: 8px; }
   .demo-card .title { font-size: 11.5px; margin-bottom: 6px; line-height: 1.4; }
   .demo-card .price-row { display: flex; align-items: baseline; gap: 6px; }
-  .demo-card .bol-price { font-size: 18px; font-weight: 800; color: var(--green); }
+  .demo-card .shop-price { font-size: 18px; font-weight: 800; color: var(--green); }
   .demo-card .save-tag { font-size: 10px; font-weight: 600; background: #DCFCE7; color: #15803D; padding: 2px 7px; border-radius: 8px; }
+  .demo-card .same-tag { font-size: 10px; font-weight: 600; background: var(--blue-bg); color: var(--blue); padding: 2px 7px; border-radius: 8px; }
+  .demo-store-libris { background: #E84E0F; color: white; font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 3px; }
   .demo-footer {
     padding: 10px 16px;
     border-top: 1px solid var(--border);
@@ -445,8 +447,8 @@
     <div class="hero-badge"><span class="dot"></span> Free & open source Chrome extension</div>
     <h1>Find it locally,<br>buy it <span class="accent">smarter</span></h1>
     <p class="hero-sub">
-      ShopSwitch finds the same product on bol. when you're browsing Amazon.
-      Compare prices instantly and switch to local EU stores with one click.
+      ShopSwitch searches local EU shops like bol. and Libris when you're browsing Amazon.
+      Compare prices across stores and switch with one click.
     </p>
     <div class="cta-group">
       <a href="https://github.com/roelwillems/shopswitch/releases" class="btn btn-primary">
@@ -463,26 +465,37 @@
       <div class="demo-header">
         <div class="demo-logo">S &nbsp;ShopSwitch</div>
       </div>
-      <div class="demo-status"><span class="dot"></span> Cheaper on bol!</div>
+      <div class="demo-status"><span class="dot"></span> Found on 2 shops</div>
       <div class="demo-amazon">
         <div class="lbl">Amazon product</div>
-        <div class="title">Samsung USB 3.1 Flash Drive FIT Plus 64GB</div>
-        <div class="price">€12,49</div>
+        <div class="title">De 4 weken reset — Oliver Burkeman</div>
+        <div class="price">€22,99</div>
       </div>
       <div class="demo-card">
         <div class="demo-card-head">
           <span class="demo-store">bol.</span>
-          <span class="demo-match">92% match</span>
+          <span class="demo-match">95% match</span>
         </div>
-        <div class="title">Samsung FIT Plus USB 3.1 Flash Drive 64GB</div>
+        <div class="title">De 4 weken reset — Oliver Burkeman</div>
         <div class="price-row">
-          <span class="bol-price">€9,99</span>
-          <span class="save-tag">Save €2,50 (20%)</span>
+          <span class="shop-price">€22,50</span>
+          <span class="same-tag">Same price</span>
+        </div>
+      </div>
+      <div class="demo-card">
+        <div class="demo-card-head">
+          <span class="demo-store-libris">Libris</span>
+          <span class="demo-match">97% match</span>
+        </div>
+        <div class="title">De 4 weken reset — Oliver Burkeman</div>
+        <div class="price-row">
+          <span class="shop-price">€22,50</span>
+          <span class="same-tag">Same price</span>
         </div>
       </div>
       <div class="demo-footer">
-        <a>View all on bol. →</a>
-        <span>v1.0.0</span>
+        <a>bol. →</a> &nbsp;·&nbsp; <a>Libris →</a>
+        <span>v0.3</span>
       </div>
     </div>
   </section>
@@ -505,7 +518,7 @@
       <div class="step">
         <div class="step-num">3</div>
         <h3>Compare & switch</h3>
-        <p>See the match quality, price difference, and any spec variations. Click to open the product on bol. instantly.</p>
+        <p>See match quality and prices across shops. Click to open the product on bol., Libris, or any matched store instantly.</p>
       </div>
     </div>
   </section>
@@ -521,9 +534,9 @@
         <p>Uses universal product barcodes via UPCitemdb's 495M+ product database for precise matching — not just keyword guessing.</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">🌍</div>
-        <h3>Bilingual search</h3>
-        <p>Searches bol. in both English and Dutch, then picks the best result. A "wireless charger" matches "draadloze oplader" automatically.</p>
+        <div class="feature-icon">🏪</div>
+        <h3>Multi-shop search</h3>
+        <p>Searches multiple stores in parallel. Books are automatically checked on both bol. and Libris. More shops coming soon.</p>
       </div>
       <div class="feature">
         <div class="feature-icon">⚖️</div>
@@ -538,7 +551,7 @@
       <div class="feature">
         <div class="feature-icon">💰</div>
         <h3>Price comparison</h3>
-        <p>Instantly see if bol. is cheaper, pricier, or the same. Shows the exact difference in euros and percentage.</p>
+        <p>Compare prices across all matched shops at a glance. See the exact difference in euros and percentage for each store.</p>
       </div>
       <div class="feature">
         <div class="feature-icon">🔒</div>
@@ -553,7 +566,8 @@
     <div class="section-label">Roadmap</div>
     <h2>Built to grow across Europe</h2>
     <div class="roadmap-items">
-      <div class="roadmap-item"><span class="tag tag-now">Live</span> bol. (NL &amp; BE)</div>
+      <div class="roadmap-item"><span class="tag tag-now">Live</span> bol. (NL &amp; BE) — all products</div>
+      <div class="roadmap-item"><span class="tag tag-now">Live</span> Libris — Dutch bookshop</div>
       <div class="roadmap-item"><span class="tag tag-next">Next</span> More EU platforms &amp; stores</div>
       <div class="roadmap-item"><span class="tag tag-next">Next</span> Smarter matching &amp; richer comparisons</div>
       <div class="roadmap-item"><span class="tag tag-later">Exploring</span> Multi-country support</div>
@@ -564,7 +578,7 @@
   <section class="cta-section">
     <div class="cta-card">
       <h2>Ready to switch?</h2>
-      <p>It's free, open source, and takes 30 seconds to install.</p>
+      <p>Search bol. and Libris from any Amazon page. Free, open source, 30 seconds to install.</p>
       <a href="https://github.com/roelwillems/shopswitch/releases" class="btn btn-white">
         Download ShopSwitch
       </a>
@@ -581,7 +595,7 @@
       <a href="https://github.com/roelwillems/shopswitch">GitHub</a>
     </p>
     <p style="margin-top: 4px; font-size: 11px; opacity: 0.7;">
-      ShopSwitch is not affiliated with Amazon or bol.
+      ShopSwitch is not affiliated with Amazon, bol., or Libris.
     </p>
   </div>
 </footer>
