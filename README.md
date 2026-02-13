@@ -49,7 +49,7 @@ Results are validated against the Amazon product using weighted scoring that pri
 
 Click the ⚙ icon in the popup to configure:
 
-- Disabled currently **Affiliate support** — Enable referral links to support ShopSwitch development (costs you nothing)
+- **Affiliate support [not included currently]** — Enable referral links to support ShopSwitch development (costs you nothing)
 - **Stores** — Currently bol.com; more EU stores coming soon
 
 ## Roadmap
