@@ -4,6 +4,11 @@ const $ = (id) => document.getElementById(id);
 const content = $("content");
 const VERSION = "1.0.0";
 
+const SHOPS = {
+  bol:    { name: "bol.",   color: "#0000A4" },
+  libris: { name: "Libris", color: "#E84E0F" },
+};
+
 $("settingsBtn").addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
 });
@@ -38,12 +43,13 @@ function priceColorClass(bolPrice, amazonPrice) {
   return "neutral";
 }
 
-function specDiffHtml(specDiffs) {
+function specDiffHtml(specDiffs, shopName) {
   if (!specDiffs || !specDiffs.length) return "";
+  const sn = shopName || "bol.";
   const items = specDiffs.map(d =>
     `<div class="spec-diff-item">
       <span class="spec-name">${d.label}:</span>
-      <span class="spec-values">Amazon ${d.amazon} → bol. ${d.bol}</span>
+      <span class="spec-values">Amazon ${d.amazon} → ${escHtml(sn)} ${d.bol}</span>
     </div>`
   ).join("");
   return `<div class="spec-diff-banner">
@@ -56,7 +62,10 @@ function statusBarHtml(statusClass, text) {
   return `<div class="status-bar ${statusClass}"><span class="status-dot"></span>${text}</div>`;
 }
 
-function renderMatch(result, amazonPrice) {
+function renderMatch(result, amazonPrice, shop) {
+  const shopName = shop?.name || "bol.";
+  const shopColor = shop?.color || "#0000A4";
+
   const matchClass = result.matchType === "approximate" ? "approx" : matchPctClass(result.matchScore);
   const matchLabel = result.matchType === "approximate"
     ? `≈ ${result.matchScore}%`
@@ -66,8 +75,7 @@ function renderMatch(result, amazonPrice) {
   const isUnavailable = result.available === false;
   const cardClass = isUnavailable ? "match-card unavailable" : "match-card";
 
-  // Price comparison row: show bol price + amazon price side by side + diff
-  const bolPriceStr = formatPrice(result.price);
+  const priceStr = formatPrice(result.price);
   const colorClass = priceColorClass(result.price, amazonPrice);
   const diffStr = isUnavailable ? "" : priceDiffHtml(result.price, amazonPrice);
   const amazonRef = (!isUnavailable && amazonPrice != null && result.price != null)
@@ -77,28 +85,29 @@ function renderMatch(result, amazonPrice) {
   return `
     <div class="${cardClass}" data-url="${escAttr(linkUrl)}">
       <div class="card-header">
-        <span class="store-badge">bol.</span>
+        <span class="store-badge" style="background:${shopColor}">${escHtml(shopName)}</span>
         ${unavailBadge}
         <span class="match-pct ${matchClass}">${matchLabel}</span>
       </div>
       <div class="product-title">${escHtml(result.title)}</div>
       <div class="price-row">
-        <span class="bol-price ${colorClass}">${bolPriceStr}</span>
+        <span class="bol-price ${colorClass}">${priceStr}</span>
         ${diffStr}
       </div>
       ${amazonRef}
-      ${specDiffHtml(result.specDiffs)}
+      ${specDiffHtml(result.specDiffs, shopName)}
       <span class="arrow-icon">›</span>
     </div>`;
 }
 
-function renderAlternative(alt, amazonPrice) {
+function renderAlternative(alt, amazonPrice, shop) {
   if (!alt) return "";
+  const shopName = shop?.name || "bol.";
   const linkUrl = alt.url;
   const diffStr = priceDiffHtml(alt.price, amazonPrice);
   return `
     <div class="alternative" data-url="${escAttr(linkUrl)}">
-      <div class="alt-header">Also found on bol.</div>
+      <div class="alt-header">Also found on ${escHtml(shopName)}</div>
       <div class="alt-title">${escHtml(alt.title)}</div>
       <div class="alt-meta">
         <span class="alt-price">${formatPrice(alt.price)}</span>
@@ -178,58 +187,112 @@ function render(data) {
   }
 
   if (data.status === "not_found") {
-    const searchUrl = data.bolResults?.searchUrl || "#";
+    const shopResults = data.shopResults || {};
+    const searchedShopIds = Object.keys(shopResults);
+    const shopNames = searchedShopIds.map(id => SHOPS[id]?.name || id);
+    const notFoundText = shopNames.length > 1
+      ? `Not found on ${shopNames.join(" or ")}`
+      : `Not found on ${shopNames[0] || "bol."}`;
+    const footerLinks = searchedShopIds.length > 0
+      ? searchedShopIds.map(shopId => {
+          const shop = SHOPS[shopId] || { name: shopId };
+          const url = shopResults[shopId]?.searchUrl || "#";
+          return `<a href="${escAttr(url)}" target="_blank">Search ${escHtml(shop.name)} →</a>`;
+        }).join(" · ")
+      : `<a href="${escAttr(data.bolResults?.searchUrl || "#")}" target="_blank">Search bol. manually →</a>`;
     content.innerHTML = `
-      ${statusBarHtml("not-found", "Not found on bol.")}
+      ${statusBarHtml("not-found", notFoundText)}
       ${amazonBar(data.amazonProduct)}
       <div class="empty-state">
         <div class="icon">🔎</div>
         <h3>No match found</h3>
-        <p>This product doesn't appear to be available on bol., or it may be listed under a different name.</p>
+        <p>This product doesn't appear to be available, or it may be listed under a different name.</p>
       </div>
       <div class="footer">
-        <a href="${escAttr(searchUrl)}" target="_blank">Search bol. manually →</a>
+        <div>${footerLinks}</div>
         <span class="version">v${VERSION}</span>
       </div>`;
     attachClickHandlers();
     return;
   }
 
-  // Found
-  const best = data.bolResults.results[0];
-  const alt = data.alternative || data.bolResults.alternative;
+  // Found — render results from all shops
   const ap = data.amazonProduct.price;
-  const bp = best?.price;
-  const mt = best?.matchType || "exact";
+  const shopResults = data.shopResults || {};
+
+  // Collect shops that have results
+  const shopsWithResults = Object.entries(shopResults)
+    .filter(([_, r]) => r?.results?.length > 0);
+  const shopCount = shopsWithResults.length;
+
+  // Find best result across all shops for status bar
+  let bestResult = null;
+  let bestShopId = null;
+  for (const [shopId, r] of shopsWithResults) {
+    const candidate = r.results[0];
+    if (!bestResult || (candidate.rankScore || 0) > (bestResult.rankScore || 0)) {
+      bestResult = candidate;
+      bestShopId = shopId;
+    }
+  }
+
+  const bp = bestResult?.price;
+  const mt = bestResult?.matchType || "exact";
+  const bestShopName = SHOPS[bestShopId]?.name || bestShopId;
 
   let statusClass, statusText;
-  if (best?.available === false) {
+  if (shopCount > 1) {
+    statusClass = "found-neutral";
+    statusText = `Found on ${shopCount} shops`;
+  } else if (bestResult?.available === false) {
     statusClass = "found-unavailable";
-    statusText = "Found on bol. — currently unavailable";
+    statusText = `Found on ${bestShopName} — currently unavailable`;
   } else if (mt === "approximate") {
     statusClass = "found-approx";
     statusText = "Similar product found — specs may differ";
   } else if (bp != null && ap != null) {
-    if (bp < ap) { statusClass = "found-cheaper"; statusText = "Cheaper on bol!"; }
-    else if (bp > ap) { statusClass = "found-pricier"; statusText = "Found on bol. — but pricier"; }
-    else { statusClass = "found-neutral"; statusText = "Same price on bol."; }
+    if (bp < ap) { statusClass = "found-cheaper"; statusText = `Cheaper on ${bestShopName}!`; }
+    else if (bp > ap) { statusClass = "found-pricier"; statusText = `Found on ${bestShopName} — but pricier`; }
+    else { statusClass = "found-neutral"; statusText = `Same price on ${bestShopName}`; }
   } else {
     statusClass = "found-neutral";
-    statusText = "Found on bol.";
+    statusText = `Found on ${bestShopName}`;
   }
 
-  const searchUrl = data.bolResults?.searchUrl || "#";
-  const method = data.bolResults?.searchMethod || "";
-  const methodNote = method.includes("EAN") || method.includes("ISBN")
-    ? `<span style="font-size:10px;color:var(--ss-text-dim);margin-left:auto">via ${escHtml(method)}</span>` : "";
+  // Method note from first shop with a product-code method
+  const allMethods = shopsWithResults.map(([_, r]) => r.searchMethod || "").filter(Boolean);
+  const codeMethod = allMethods.find(m => m.includes("EAN") || m.includes("ISBN"));
+  const methodNote = codeMethod
+    ? `<span style="font-size:10px;color:var(--ss-text-dim);margin-left:auto">via ${escHtml(codeMethod)}</span>` : "";
+
+  // Render shop cards
+  const shopCards = shopsWithResults.map(([shopId, shopData]) => {
+    const shop = SHOPS[shopId] || { name: shopId, color: "#666" };
+    return renderMatch(shopData.results[0], ap, shop);
+  }).join("");
+
+  // Show alternative only for the first shop (to keep it clean)
+  const firstShopData = shopsWithResults[0]?.[1];
+  const firstShopId = shopsWithResults[0]?.[0];
+  const alt = firstShopData?.alternative;
+  const altShop = SHOPS[firstShopId];
+  const altHtml = alt ? renderAlternative(alt, ap, altShop) : "";
+
+  // Footer: manual search links per shop that was searched
+  const searchedShopIds = Object.keys(shopResults);
+  const footerLinks = searchedShopIds.map(shopId => {
+    const shop = SHOPS[shopId] || { name: shopId };
+    const url = shopResults[shopId]?.searchUrl || "#";
+    return `<a href="${escAttr(url)}" target="_blank">View on ${escHtml(shop.name)} →</a>`;
+  }).join(" · ");
 
   content.innerHTML = `
     ${statusBarHtml(statusClass, statusText + methodNote)}
     ${amazonBar(data.amazonProduct)}
-    ${renderMatch(best, ap)}
-    ${renderAlternative(alt, ap)}
+    ${shopCards}
+    ${altHtml}
     <div class="footer">
-      <a href="${escAttr(searchUrl)}" target="_blank">View all on bol. →</a>
+      <div>${footerLinks}</div>
       <span class="version">v${VERSION}</span>
     </div>`;
 

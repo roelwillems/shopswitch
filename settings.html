@@ -113,6 +113,18 @@
   }
   .saved-msg.show { opacity: 1; }
 
+  .warning-box {
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: #FEF2F2;
+    border: 1px solid #FECACA;
+    border-radius: 6px;
+    font-size: 11px;
+    color: #B91C1C;
+    font-weight: 500;
+    line-height: 1.5;
+  }
+
   .about {
     font-size: 11px;
     color: var(--ss-dim);
@@ -149,26 +161,29 @@
   </div>
 
   <div class="section">
-    <h2>🏪 Stores (coming soon)</h2>
+    <h2>🏪 Stores</h2>
     <div class="toggle-row">
       <div>
         <label>bol.</label>
-        <div class="hint">Netherlands & Belgium</div>
+        <div class="hint">Netherlands & Belgium — all products</div>
       </div>
       <label class="switch">
-        <input type="checkbox" checked disabled>
-        <span class="slider" style="cursor: default;"></span>
+        <input type="checkbox" id="bolEnabled" checked>
+        <span class="slider"></span>
       </label>
     </div>
-    <div class="toggle-row" style="opacity: 0.5;">
+    <div class="toggle-row">
       <div>
-        <label>More stores</label>
-        <div class="hint">Additional EU platforms coming soon</div>
+        <label>Libris</label>
+        <div class="hint">Dutch bookshop — searched for books</div>
       </div>
       <label class="switch">
-        <input type="checkbox" disabled>
-        <span class="slider" style="cursor: default;"></span>
+        <input type="checkbox" id="librisEnabled" checked>
+        <span class="slider"></span>
       </label>
+    </div>
+    <div class="warning-box" id="storesWarning" style="display:none;">
+      Enable at least one store for ShopSwitch to work
     </div>
   </div>
 

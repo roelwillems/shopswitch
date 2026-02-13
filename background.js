@@ -25,10 +25,19 @@ async function loadPersisted(tabId) {
 // ═══════════════════════════════════════════════════════════════
 
 async function getSettings() {
-  const defaults = { badgeStyle: "neutral" };
+  const defaults = { badgeStyle: "neutral", bolEnabled: true, librisEnabled: true };
   const stored = await chrome.storage.sync.get("shopswitch_settings");
   return { ...defaults, ...(stored.shopswitch_settings || {}) };
 }
+
+// ═══════════════════════════════════════════════════════════════
+// SHOP REGISTRY
+// ═══════════════════════════════════════════════════════════════
+
+const SHOPS = {
+  bol:    { name: "bol.",   category: "generic", color: "#0000A4" },
+  libris: { name: "Libris", category: "books",   color: "#E84E0F" },
+};
 
 // ═══════════════════════════════════════════════════════════════
 // BADGE
@@ -919,6 +928,279 @@ async function fetchBolProductDetails(productUrl) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// LIBRIS.NL SEARCH ENGINE
+// ═══════════════════════════════════════════════════════════════
+
+async function searchLibris(product) {
+  const queries = [];
+  const brand = cleanBrand(product.brand);
+
+  // Product codes: ISBN-13 (EAN), ISBN-10
+  if (product.ean) queries.push({ query: product.ean, label: "Libris-EAN", isProductCode: true });
+  if (product.isbn10 && !product.ean) queries.push({ query: product.isbn10, label: "Libris-ISBN10", isProductCode: true });
+
+  // Text search: cleaned title with brand
+  const cleaned = cleanTitle(product.title || "", 8);
+  let specific = cleaned;
+  if (brand && !cleaned.toLowerCase().includes(brand.toLowerCase())) specific = `${brand} ${cleaned}`;
+  if (specific.trim()) queries.push({ query: specific.trim(), label: "Libris-text", isProductCode: false });
+
+  // Broad fallback
+  const broad = cleanTitle(product.title || "", 6);
+  if (broad.trim() && broad.trim() !== specific.trim()) {
+    queries.push({ query: broad.trim(), label: "Libris-broad", isProductCode: false });
+  }
+
+  console.log(`[${SS}] Libris cascade:`, queries.map(q => `${q.label}: "${q.query}"`));
+
+  const codeQueries = queries.filter(q => q.isProductCode);
+  const textQueries = queries.filter(q => !q.isProductCode);
+
+  // Phase 1: Product codes
+  for (const { query, label } of codeQueries) {
+    const r = await tryLibrisSearch(query, label, product, brand, true);
+    if (r) return r;
+  }
+
+  // Phase 2: Text searches — collect all, pick best
+  const allCandidates = [];
+  for (const { query, label } of textQueries) {
+    const r = await tryLibrisSearch(query, label, product, brand, false, true);
+    if (r) allCandidates.push(...r.results.map(res => ({ ...res, searchMethod: label, searchUrl: r.searchUrl })));
+  }
+
+  if (allCandidates.length > 0) {
+    // Deduplicate by URL
+    const byUrl = {};
+    for (const c of allCandidates) {
+      const key = c.url.split("?")[0].split("#")[0];
+      if (!byUrl[key] || c.matchScore > byUrl[key].matchScore) byUrl[key] = c;
+    }
+
+    const deduped = Object.values(byUrl);
+    for (const r of deduped) computeRankScore(r, product.title || "", product.price);
+    deduped.sort((a, b) => b.rankScore - a.rankScore);
+
+    let best = deduped[0];
+    let alternative = deduped.length > 1 ? deduped[1] : null;
+
+    // Fetch details for top picks if needed
+    const amazonTitle = product.title || "";
+    const toFetch = [best, alternative].filter(r => r && r.price == null);
+    if (toFetch.length) {
+      await Promise.allSettled(toFetch.map(async (r) => {
+        const details = await fetchLibrisProductDetails(r.url);
+        if (details !== null) {
+          r.price = details.price;
+          r.available = details.available;
+          if (details.fullTitle) {
+            r.title = details.fullTitle;
+            const sim = crossLangSimilarity(amazonTitle, r.title, brand);
+            r.matchScore = Math.round(sim.score * 100);
+            r.matchLang = sim.lang;
+            r.differingSpecs = sim.differingSpecs;
+            r.missingTerms = sim.missingTerms;
+            console.log(`[${SS}] Libris re-scored: "${r.title.substring(0, 60)}…" → ${r.matchScore}%`);
+          }
+        }
+      }));
+    }
+
+    computeRankScore(best, amazonTitle, product.price);
+    if (alternative) computeRankScore(alternative, amazonTitle, product.price);
+    if (alternative && alternative.rankScore > best.rankScore) {
+      [best, alternative] = [alternative, best];
+    }
+
+    for (const r of [best, alternative].filter(Boolean)) {
+      const analysis = analyzeMatchType(amazonTitle, r.title);
+      r.matchType = analysis.type;
+      r.specDiffs = analysis.specDiffs;
+    }
+
+    return {
+      results: [best],
+      alternative,
+      searchUrl: `https://libris.nl/zoek?q=${encodeURIComponent(product.title || "")}`,
+      searchMethod: best.searchMethod,
+    };
+  }
+
+  return {
+    results: [],
+    alternative: null,
+    searchUrl: `https://libris.nl/zoek?q=${encodeURIComponent(product.title || "")}`,
+    searchMethod: "none",
+  };
+}
+
+async function tryLibrisSearch(query, label, product, brand, isProductCode, collectMode = false) {
+  const searchUrl = `https://libris.nl/zoek?q=${encodeURIComponent(query)}`;
+  console.log(`[${SS}] Trying ${label}: ${query}`);
+
+  try {
+    const resp = await fetch(searchUrl, {
+      headers: {
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+    });
+    if (!resp.ok) return null;
+
+    const html = await resp.text();
+    const librisData = parseLibrisResults(html, searchUrl);
+    const amazonTitle = product.title || "";
+
+    librisData.results = validateAndScoreResults(librisData.results, amazonTitle, brand, isProductCode);
+    if (!librisData.results.length) return null;
+
+    console.log(`[${SS}] Libris: ${librisData.results.length} validated via ${label}`);
+    librisData.searchMethod = label;
+
+    // Fetch details for top results
+    const topN = collectMode ? librisData.results.slice(0, 2) : librisData.results.slice(0, 3);
+    await Promise.allSettled(topN.map(async (r) => {
+      const details = await fetchLibrisProductDetails(r.url);
+      if (details !== null) {
+        r.price = details.price;
+        r.available = details.available;
+        if (details.fullTitle) {
+          r.title = details.fullTitle;
+          const sim = crossLangSimilarity(amazonTitle, r.title, brand);
+          r.matchScore = Math.round(sim.score * 100);
+          r.matchLang = sim.lang;
+          r.differingSpecs = sim.differingSpecs;
+          r.missingTerms = sim.missingTerms;
+          console.log(`[${SS}] Libris re-scored: "${r.title.substring(0, 60)}…" → ${r.matchScore}%`);
+        }
+      }
+    }));
+
+    for (const r of librisData.results) {
+      const analysis = analyzeMatchType(amazonTitle, r.title);
+      r.matchType = analysis.type;
+      r.specDiffs = analysis.specDiffs;
+    }
+
+    if (!collectMode) {
+      for (const r of librisData.results) computeRankScore(r, amazonTitle, product.price);
+      librisData.results.sort((a, b) => b.rankScore - a.rankScore);
+      librisData.alternative = librisData.results.length > 1 ? librisData.results[1] : null;
+      librisData.results = [librisData.results[0]];
+    }
+
+    return librisData;
+  } catch (err) {
+    console.warn(`[${SS}] Libris ${label} failed:`, err.message);
+    return null;
+  }
+}
+
+function parseLibrisResults(html, searchUrl) {
+  const results = [];
+  const regex = /<a[^>]*href="(\/a\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  const seen = new Set();
+  let m;
+
+  while ((m = regex.exec(html)) !== null) {
+    const relUrl = m[1];
+    const text = m[2].replace(/<[^>]*>/g, "").trim();
+    if (!text || text.length < 3) continue;
+    const cleanUrl = relUrl.split("?")[0].split("#")[0];
+    if (seen.has(cleanUrl)) continue;
+    seen.add(cleanUrl);
+
+    results.push({ title: text.substring(0, 200), url: `https://libris.nl${relUrl}`, price: null });
+    if (results.length >= 5) break;
+  }
+
+  return { results, searchUrl, query: decodeURIComponent(searchUrl.split("q=")[1] || "") };
+}
+
+async function fetchLibrisProductDetails(productUrl) {
+  try {
+    const resp = await fetch(productUrl, {
+      headers: {
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+    });
+    if (!resp.ok) return null;
+    const html = await resp.text();
+
+    let price = null;
+    let available = true;
+    let fullTitle = null;
+
+    // JSON-LD — extract price, availability, and title
+    let jsonLdTitle = null;
+    for (const jm of [...html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)]) {
+      try {
+        const data = JSON.parse(jm[1]);
+        const items = Array.isArray(data) ? data : [data];
+        for (const item of items) {
+          if (item["@type"] === "Product" || item["@type"] === "Book") {
+            if (item.name) jsonLdTitle = item.name;
+            if (item.offers) {
+              const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
+              for (const o of offers) {
+                if (o.availability) {
+                  const avail = o.availability.replace(/^https?:\/\/schema\.org\//, "");
+                  const inStockValues = ["InStock", "OnlineOnly", "PreOrder", "LimitedAvailability"];
+                  available = inStockValues.includes(avail);
+                }
+                if (price == null) {
+                  const p = parseFloat(o.price || o.lowPrice);
+                  if (!isNaN(p) && p > 0) price = p;
+                }
+              }
+            }
+          }
+        }
+      } catch(e) {}
+    }
+
+    // Full title: combine <h1> (main title) + <h4> (subtitle)
+    const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    if (h1Match) {
+      const h1Text = h1Match[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      if (h1Text.length >= 3) {
+        fullTitle = h1Text;
+        // Also check for subtitle in <h4>
+        const h4Match = html.match(/<h4[^>]*>([\s\S]*?)<\/h4>/i);
+        if (h4Match) {
+          const h4Text = h4Match[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+          if (h4Text.length >= 2) fullTitle = `${fullTitle} ${h4Text}`;
+        }
+      }
+    }
+    if (!fullTitle && jsonLdTitle) fullTitle = jsonLdTitle;
+    if (!fullTitle) {
+      const ogTitle = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i);
+      if (ogTitle) fullTitle = ogTitle[1];
+    }
+    // Strip pipe-separated metadata
+    if (fullTitle) fullTitle = fullTitle.replace(/\s*\|.*$/, "").trim();
+
+    // Fallback price: meta tags
+    if (price == null) {
+      const metaM = html.match(/<meta[^>]*(?:property|name)="(?:og:price:amount|product:price:amount)"[^>]*content="([^"]+)"/i);
+      if (metaM) { const p = parseFloat(metaM[1].replace(",",".")); if (!isNaN(p) && p > 0) price = p; }
+    }
+
+    // Fallback price: common price patterns in HTML
+    if (price == null) {
+      const priceM = html.match(/["']?(?:price|currentPrice|salePrice)["']?\s*[:=]\s*["']?(\d+[.,]\d{2})["']?/i);
+      if (priceM) { const p = parseFloat(priceM[1].replace(",",".")); if (!isNaN(p) && p > 0) price = p; }
+    }
+
+    return { price, available, fullTitle };
+  } catch (err) { return null; }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MESSAGE HANDLING
 // ═══════════════════════════════════════════════════════════════
 
@@ -928,24 +1210,48 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const product = msg.product;
 
     badge.loading(tabId);
-    resultsByTab[tabId] = { status: "loading", amazonProduct: product, bolResults: null, error: null };
+    resultsByTab[tabId] = { status: "loading", amazonProduct: product, bolResults: null, shopResults: {}, error: null };
 
-    searchBolCom(product).then(async (bolData) => {
+    (async () => {
       const settings = await getSettings();
-      const found = bolData.results.length > 0;
+
+      // Build list of shops to search
+      const shopsToSearch = [];
+      if (settings.bolEnabled !== false) shopsToSearch.push({ id: "bol", fn: searchBolCom });
+      if (settings.librisEnabled !== false && product.isBook) shopsToSearch.push({ id: "libris", fn: searchLibris });
+
+      const shopResults = {};
+      await Promise.allSettled(
+        shopsToSearch.map(async ({ id, fn }) => {
+          shopResults[id] = await fn(product);
+        })
+      );
+
+      const found = Object.values(shopResults).some(r => r?.results?.length > 0);
+
+      // Find the best result across all shops for badge display
+      let bestResult = null;
+      for (const r of Object.values(shopResults)) {
+        if (r?.results?.length > 0) {
+          const candidate = r.results[0];
+          if (!bestResult || (candidate.rankScore || 0) > (bestResult.rankScore || 0)) {
+            bestResult = candidate;
+          }
+        }
+      }
 
       resultsByTab[tabId] = {
         status: found ? "found" : "not_found",
         amazonProduct: product,
-        bolResults: bolData,
-        alternative: bolData.alternative || null,
+        shopResults,
+        bolResults: shopResults.bol || null,      // backwards compat
+        alternative: shopResults.bol?.alternative || null,
         error: null,
       };
 
-      if (found) {
-        const best = bolData.results[0];
-        const mt = best.matchType || "exact";
-        const bp = best.price, ap = product.price;
+      if (found && bestResult) {
+        const mt = bestResult.matchType || "exact";
+        const bp = bestResult.price, ap = product.price;
 
         if (mt === "approximate") badge.approx(tabId);
         else if (settings.badgeStyle === "price") {
@@ -958,10 +1264,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else badge.notFound(tabId);
 
       persist(tabId);
-      console.log(`[${SS}] ${found ? "Found" : "No match"} for "${product.title?.substring(0, 50)}"`);
-    }).catch((err) => {
+      const shopNames = Object.keys(shopResults).filter(id => shopResults[id]?.results?.length > 0);
+      console.log(`[${SS}] ${found ? `Found on ${shopNames.join(", ")}` : "No match"} for "${product.title?.substring(0, 50)}"`);
+    })().catch((err) => {
       console.error(`[${SS}] Error:`, err);
-      resultsByTab[tabId] = { status: "error", amazonProduct: product, bolResults: null, error: err.message };
+      resultsByTab[tabId] = { status: "error", amazonProduct: product, bolResults: null, shopResults: {}, error: err.message };
       badge.error(tabId);
       persist(tabId);
     });

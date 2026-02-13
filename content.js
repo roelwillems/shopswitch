@@ -77,15 +77,18 @@
       ".detail-bullet-list span.a-list-item, #productDetails_db_sections tr, " +
       ".prodDetTable tr, #isbn_feature_div .a-list-item"
     );
+    let hasIsbnField = false;
     detailRows.forEach((row) => {
       const text = row.textContent;
       if (/EAN|ISBN-13|GTIN|ISBN[-\s]?13/i.test(text)) {
         const m = text.match(/(\d{13})/);
         if (m) info.ean = m[1];
+        if (/ISBN/i.test(text)) hasIsbnField = true;
       }
       if (!info.ean && /ISBN-10|ISBN[-\s]?10/i.test(text)) {
         const m = text.match(/(\d{9}[\dXx])/);
         if (m) info.isbn10 = m[1];
+        hasIsbnField = true;
       }
     });
 
@@ -97,6 +100,9 @@
         else if (val?.length === 10) info.isbn10 = val;
       }
     }
+
+    // Detect books: ISBN fields, isbn_feature_div, or book:isbn meta tag
+    info.isBook = !!(info.isbn10 || hasIsbnField || document.querySelector('#isbn_feature_div, meta[property="book:isbn"]'));
 
     return info;
   }
