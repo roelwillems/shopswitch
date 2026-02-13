@@ -21,22 +21,13 @@ async function loadPersisted(tabId) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SETTINGS & AFFILIATE
+// SETTINGS
 // ═══════════════════════════════════════════════════════════════
 
-// Hardcoded affiliate code — update this once your bol.com partner code is active
-const AFFILIATE_CODE = ""; // e.g. "shopswitch-21"
-
 async function getSettings() {
-  const defaults = { affiliateEnabled: false, badgeStyle: "neutral" };
+  const defaults = { badgeStyle: "neutral" };
   const stored = await chrome.storage.sync.get("shopswitch_settings");
   return { ...defaults, ...(stored.shopswitch_settings || {}) };
-}
-
-function buildAffiliateUrl(bolUrl, settings) {
-  if (!settings.affiliateEnabled || !AFFILIATE_CODE) return bolUrl;
-  const sep = bolUrl.includes("?") ? "&" : "?";
-  return `${bolUrl}${sep}referrer=${encodeURIComponent(AFFILIATE_CODE)}`;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -943,18 +934,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const settings = await getSettings();
       const found = bolData.results.length > 0;
 
-      // Attach affiliate URLs
-      if (found) {
-        for (const r of bolData.results) r.affiliateUrl = buildAffiliateUrl(r.url, settings);
-        if (bolData.alternative) bolData.alternative.affiliateUrl = buildAffiliateUrl(bolData.alternative.url, settings);
-      }
-
       resultsByTab[tabId] = {
         status: found ? "found" : "not_found",
         amazonProduct: product,
         bolResults: bolData,
         alternative: bolData.alternative || null,
-        affiliateEnabled: settings.affiliateEnabled,
         error: null,
       };
 

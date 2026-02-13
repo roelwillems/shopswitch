@@ -56,13 +56,13 @@ function statusBarHtml(statusClass, text) {
   return `<div class="status-bar ${statusClass}"><span class="status-dot"></span>${text}</div>`;
 }
 
-function renderMatch(result, amazonPrice, affiliateEnabled) {
+function renderMatch(result, amazonPrice) {
   const matchClass = result.matchType === "approximate" ? "approx" : matchPctClass(result.matchScore);
   const matchLabel = result.matchType === "approximate"
     ? `≈ ${result.matchScore}%`
     : `${result.matchScore}% match`;
 
-  const linkUrl = result.affiliateUrl || result.url;
+  const linkUrl = result.url;
   const isUnavailable = result.available === false;
   const cardClass = isUnavailable ? "match-card unavailable" : "match-card";
 
@@ -94,7 +94,7 @@ function renderMatch(result, amazonPrice, affiliateEnabled) {
 
 function renderAlternative(alt, amazonPrice) {
   if (!alt) return "";
-  const linkUrl = alt.affiliateUrl || alt.url;
+  const linkUrl = alt.url;
   const diffStr = priceDiffHtml(alt.price, amazonPrice);
   return `
     <div class="alternative" data-url="${escAttr(linkUrl)}">
@@ -226,9 +226,8 @@ function render(data) {
   content.innerHTML = `
     ${statusBarHtml(statusClass, statusText + methodNote)}
     ${amazonBar(data.amazonProduct)}
-    ${renderMatch(best, ap, data.affiliateEnabled)}
+    ${renderMatch(best, ap)}
     ${renderAlternative(alt, ap)}
-    ${affiliateNotice(data.affiliateEnabled)}
     <div class="footer">
       <a href="${escAttr(searchUrl)}" target="_blank">View all on bol. →</a>
       <span class="version">v${VERSION}</span>
@@ -247,14 +246,6 @@ function amazonBar(product) {
     </div>`;
 }
 
-function affiliateNotice(enabled) {
-  if (!enabled) return "";
-  return `
-    <div class="affiliate-notice">
-      <span class="heart">💙</span>
-      <span>You're supporting ShopSwitch development at no extra cost. Thank you!</span>
-    </div>`;
-}
 
 // Load results
 chrome.runtime.sendMessage({ type: "GET_RESULTS" }, (response) => {
