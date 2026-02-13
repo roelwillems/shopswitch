@@ -17,7 +17,9 @@
     "https://www.amazon.es/*",
     "https://www.amazon.it/*",
     "https://www.bol.com/*",
-    "https://api.upcitemdb.com/*"
+    "https://api.upcitemdb.com/*",
+    "https://libris.nl/*",
+    "https://www.libris.nl/*"
   ],
   "background": {
     "service_worker": "background.js"

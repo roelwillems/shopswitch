@@ -928,6 +928,84 @@ async function fetchBolProductDetails(productUrl) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CLOUDFLARE BYPASS (TAB-BASED FETCH FOR LIBRIS)
+// ═══════════════════════════════════════════════════════════════
+
+function isCfChallenge(html) {
+  return html.length < 50000 && (html.includes("cf_chl_opt") || html.includes("challenge-platform"));
+}
+
+async function fetchLibrisHtml(url) {
+  // Try direct fetch first (works if user already has cf_clearance cookie)
+  try {
+    const resp = await fetch(url, {
+      headers: {
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
+      },
+    });
+    if (resp.ok) {
+      const html = await resp.text();
+      if (!isCfChallenge(html)) return html;
+    }
+  } catch (e) { /* fetch failed, try tab */ }
+
+  // Cloudflare challenge — load via background tab to pass JS challenge
+  console.log(`[${SS}] Cloudflare challenge on libris.nl, loading via tab…`);
+  return fetchViaTab(url);
+}
+
+function fetchViaTab(url) {
+  return new Promise(async (resolve) => {
+    let resolved = false;
+    let tabId = null;
+
+    const finish = (html) => {
+      if (resolved) return;
+      resolved = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+      if (tabId) chrome.tabs.remove(tabId).catch(() => {});
+      resolve(html);
+    };
+
+    const timer = setTimeout(() => {
+      console.warn(`[${SS}] Libris tab fetch timed out`);
+      finish(null);
+    }, 20000);
+
+    function onUpdated(id, info) {
+      if (id !== tabId || info.status !== "complete" || resolved) return;
+      // Wait for page to settle after Cloudflare redirect
+      setTimeout(async () => {
+        if (resolved) return;
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => document.documentElement.outerHTML,
+          });
+          const html = results?.[0]?.result || "";
+          if (!isCfChallenge(html)) {
+            finish(html);
+          } else {
+            console.log(`[${SS}] Still on CF challenge, waiting…`);
+          }
+        } catch (e) { /* page navigating, wait */ }
+      }, 800);
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    try {
+      const tab = await chrome.tabs.create({ url, active: false });
+      tabId = tab.id;
+    } catch (e) {
+      finish(null);
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
 // LIBRIS.NL SEARCH ENGINE
 // ═══════════════════════════════════════════════════════════════
 
@@ -970,47 +1048,20 @@ async function searchLibris(product) {
   }
 
   if (allCandidates.length > 0) {
-    // Deduplicate by URL
+    // Deduplicate by URL (strip fragment)
     const byUrl = {};
     for (const c of allCandidates) {
-      const key = c.url.split("?")[0].split("#")[0];
+      const key = c.url.split("#")[0];
       if (!byUrl[key] || c.matchScore > byUrl[key].matchScore) byUrl[key] = c;
     }
 
     const deduped = Object.values(byUrl);
-    for (const r of deduped) computeRankScore(r, product.title || "", product.price);
+    const amazonTitle = product.title || "";
+    for (const r of deduped) computeRankScore(r, amazonTitle, product.price);
     deduped.sort((a, b) => b.rankScore - a.rankScore);
 
     let best = deduped[0];
     let alternative = deduped.length > 1 ? deduped[1] : null;
-
-    // Fetch details for top picks if needed
-    const amazonTitle = product.title || "";
-    const toFetch = [best, alternative].filter(r => r && r.price == null);
-    if (toFetch.length) {
-      await Promise.allSettled(toFetch.map(async (r) => {
-        const details = await fetchLibrisProductDetails(r.url);
-        if (details !== null) {
-          r.price = details.price;
-          r.available = details.available;
-          if (details.fullTitle) {
-            r.title = details.fullTitle;
-            const sim = crossLangSimilarity(amazonTitle, r.title, brand);
-            r.matchScore = Math.round(sim.score * 100);
-            r.matchLang = sim.lang;
-            r.differingSpecs = sim.differingSpecs;
-            r.missingTerms = sim.missingTerms;
-            console.log(`[${SS}] Libris re-scored: "${r.title.substring(0, 60)}…" → ${r.matchScore}%`);
-          }
-        }
-      }));
-    }
-
-    computeRankScore(best, amazonTitle, product.price);
-    if (alternative) computeRankScore(alternative, amazonTitle, product.price);
-    if (alternative && alternative.rankScore > best.rankScore) {
-      [best, alternative] = [alternative, best];
-    }
 
     for (const r of [best, alternative].filter(Boolean)) {
       const analysis = analyzeMatchType(amazonTitle, r.title);
@@ -1039,16 +1090,9 @@ async function tryLibrisSearch(query, label, product, brand, isProductCode, coll
   console.log(`[${SS}] Trying ${label}: ${query}`);
 
   try {
-    const resp = await fetch(searchUrl, {
-      headers: {
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-    });
-    if (!resp.ok) return null;
+    const html = await fetchLibrisHtml(searchUrl);
+    if (!html) return null;
 
-    const html = await resp.text();
     const librisData = parseLibrisResults(html, searchUrl);
     const amazonTitle = product.title || "";
 
@@ -1058,25 +1102,7 @@ async function tryLibrisSearch(query, label, product, brand, isProductCode, coll
     console.log(`[${SS}] Libris: ${librisData.results.length} validated via ${label}`);
     librisData.searchMethod = label;
 
-    // Fetch details for top results
-    const topN = collectMode ? librisData.results.slice(0, 2) : librisData.results.slice(0, 3);
-    await Promise.allSettled(topN.map(async (r) => {
-      const details = await fetchLibrisProductDetails(r.url);
-      if (details !== null) {
-        r.price = details.price;
-        r.available = details.available;
-        if (details.fullTitle) {
-          r.title = details.fullTitle;
-          const sim = crossLangSimilarity(amazonTitle, r.title, brand);
-          r.matchScore = Math.round(sim.score * 100);
-          r.matchLang = sim.lang;
-          r.differingSpecs = sim.differingSpecs;
-          r.missingTerms = sim.missingTerms;
-          console.log(`[${SS}] Libris re-scored: "${r.title.substring(0, 60)}…" → ${r.matchScore}%`);
-        }
-      }
-    }));
-
+    // Analyze match type (price/title already populated from JSON)
     for (const r of librisData.results) {
       const analysis = analyzeMatchType(amazonTitle, r.title);
       r.matchType = analysis.type;
@@ -1097,107 +1123,96 @@ async function tryLibrisSearch(query, label, product, brand, isProductCode, coll
   }
 }
 
+/**
+ * Parse Libris search results from HTML.
+ * Primary: extract embedded JSON from Vue data (has title, subtitle, price, ISBN).
+ * Fallback: parse rendered <a href="https://libris.nl/a/..."> links from DOM.
+ */
 function parseLibrisResults(html, searchUrl) {
+  let results = parseLibrisJson(html);
+  if (!results.length) results = parseLibrisLinks(html);
+  return { results, searchUrl, query: decodeURIComponent((searchUrl.split("q=")[1] || "").split("&")[0]) };
+}
+
+function slugify(str) {
+  return (str || "").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+}
+
+/** Extract search results from the Vue searchResults JSON embedded in the page. */
+function parseLibrisJson(html) {
+  // The Vue data contains: searchResults: { "searchInput":..., "items":[...], ... }, paginationObject:
+  const jsonMatch = html.match(/searchResults:\s*(\{"searchInput"[\s\S]+?\})\s*,\s*paginationObject:/);
+  if (!jsonMatch) return [];
+
+  try {
+    const data = JSON.parse(jsonMatch[1]);
+    if (!data.items?.length) return [];
+
+    const results = [];
+    for (const item of data.items) {
+      // Skip ebooks and audiobooks — only want physical books
+      if (item.isEbook || item.isAudiobook) continue;
+
+      const fullTitle = item.secondTitle
+        ? `${item.title} ${item.secondTitle}`
+        : item.title;
+
+      // Build product URL: /a/<author>/<title>/<nstc>#<binding>-<isbn>
+      const bindingSlug = slugify(item.binding || "paperback");
+      const url = `https://libris.nl/a/${slugify(item.author)}/${slugify(item.title)}/${item.nstc}#${bindingSlug}-${item.isbn}`;
+
+      results.push({
+        title: fullTitle,
+        url,
+        price: item.price != null ? item.price / 100 : null, // cents → euros
+        available: item.isOrderable !== false,
+        isbn: item.isbn,
+      });
+
+      if (results.length >= 5) break;
+    }
+
+    console.log(`[${SS}] Libris JSON: ${results.length} physical books parsed`);
+    return results;
+  } catch (e) {
+    console.warn(`[${SS}] Libris JSON parse failed:`, e.message);
+    return [];
+  }
+}
+
+/** Fallback: parse rendered HTML links (available when fetched via tab with Vue rendered). */
+function parseLibrisLinks(html) {
   const results = [];
-  const regex = /<a[^>]*href="(\/a\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  // Match absolute Libris product links in the rendered HTML
+  const regex = /<a[^>]*href="(https:\/\/libris\.nl\/a\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
   const seen = new Set();
   let m;
 
   while ((m = regex.exec(html)) !== null) {
-    const relUrl = m[1];
+    const url = m[1];
     const text = m[2].replace(/<[^>]*>/g, "").trim();
     if (!text || text.length < 3) continue;
-    const cleanUrl = relUrl.split("?")[0].split("#")[0];
+    // Skip ebook and audiobook links
+    if (url.includes("#ebook-") || url.includes("#luisterboek-")) continue;
+    const cleanUrl = url.split("#")[0];
     if (seen.has(cleanUrl)) continue;
     seen.add(cleanUrl);
 
-    results.push({ title: text.substring(0, 200), url: `https://libris.nl${relUrl}`, price: null });
+    // Try to extract price from nearby HTML
+    let price = null;
+    const afterLink = html.substring(m.index, m.index + 2000);
+    const priceMatch = afterLink.match(/<div class="price[^"]*">\s*([\d]+[.,]\d{2})\s*<\/div>/);
+    if (priceMatch) {
+      const p = parseFloat(priceMatch[1].replace(",", "."));
+      if (!isNaN(p) && p > 0) price = p;
+    }
+
+    results.push({ title: text.substring(0, 200), url, price });
     if (results.length >= 5) break;
   }
 
-  return { results, searchUrl, query: decodeURIComponent(searchUrl.split("q=")[1] || "") };
-}
-
-async function fetchLibrisProductDetails(productUrl) {
-  try {
-    const resp = await fetch(productUrl, {
-      headers: {
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-    });
-    if (!resp.ok) return null;
-    const html = await resp.text();
-
-    let price = null;
-    let available = true;
-    let fullTitle = null;
-
-    // JSON-LD — extract price, availability, and title
-    let jsonLdTitle = null;
-    for (const jm of [...html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)]) {
-      try {
-        const data = JSON.parse(jm[1]);
-        const items = Array.isArray(data) ? data : [data];
-        for (const item of items) {
-          if (item["@type"] === "Product" || item["@type"] === "Book") {
-            if (item.name) jsonLdTitle = item.name;
-            if (item.offers) {
-              const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
-              for (const o of offers) {
-                if (o.availability) {
-                  const avail = o.availability.replace(/^https?:\/\/schema\.org\//, "");
-                  const inStockValues = ["InStock", "OnlineOnly", "PreOrder", "LimitedAvailability"];
-                  available = inStockValues.includes(avail);
-                }
-                if (price == null) {
-                  const p = parseFloat(o.price || o.lowPrice);
-                  if (!isNaN(p) && p > 0) price = p;
-                }
-              }
-            }
-          }
-        }
-      } catch(e) {}
-    }
-
-    // Full title: combine <h1> (main title) + <h4> (subtitle)
-    const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-    if (h1Match) {
-      const h1Text = h1Match[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-      if (h1Text.length >= 3) {
-        fullTitle = h1Text;
-        // Also check for subtitle in <h4>
-        const h4Match = html.match(/<h4[^>]*>([\s\S]*?)<\/h4>/i);
-        if (h4Match) {
-          const h4Text = h4Match[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-          if (h4Text.length >= 2) fullTitle = `${fullTitle} ${h4Text}`;
-        }
-      }
-    }
-    if (!fullTitle && jsonLdTitle) fullTitle = jsonLdTitle;
-    if (!fullTitle) {
-      const ogTitle = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i);
-      if (ogTitle) fullTitle = ogTitle[1];
-    }
-    // Strip pipe-separated metadata
-    if (fullTitle) fullTitle = fullTitle.replace(/\s*\|.*$/, "").trim();
-
-    // Fallback price: meta tags
-    if (price == null) {
-      const metaM = html.match(/<meta[^>]*(?:property|name)="(?:og:price:amount|product:price:amount)"[^>]*content="([^"]+)"/i);
-      if (metaM) { const p = parseFloat(metaM[1].replace(",",".")); if (!isNaN(p) && p > 0) price = p; }
-    }
-
-    // Fallback price: common price patterns in HTML
-    if (price == null) {
-      const priceM = html.match(/["']?(?:price|currentPrice|salePrice)["']?\s*[:=]\s*["']?(\d+[.,]\d{2})["']?/i);
-      if (priceM) { const p = parseFloat(priceM[1].replace(",",".")); if (!isNaN(p) && p > 0) price = p; }
-    }
-
-    return { price, available, fullTitle };
-  } catch (err) { return null; }
+  if (results.length) console.log(`[${SS}] Libris links: ${results.length} results parsed from rendered HTML`);
+  return results;
 }
 
 // ═══════════════════════════════════════════════════════════════
