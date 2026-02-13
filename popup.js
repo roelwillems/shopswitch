@@ -62,7 +62,7 @@ function statusBarHtml(statusClass, text) {
   return `<div class="status-bar ${statusClass}"><span class="status-dot"></span>${text}</div>`;
 }
 
-function renderMatch(result, amazonPrice, shop) {
+function renderMatch(result, amazonPrice, shop, searchUrl) {
   const shopName = shop?.name || "bol.";
   const shopColor = shop?.color || "#0000A4";
 
@@ -78,8 +78,6 @@ function renderMatch(result, amazonPrice, shop) {
   const priceStr = formatPrice(result.price);
   const colorClass = priceColorClass(result.price, amazonPrice);
   const diffStr = isUnavailable ? "" : priceDiffHtml(result.price, amazonPrice);
-  const amazonRef = (!isUnavailable && amazonPrice != null && result.price != null)
-    ? `<span class="amazon-ref-price">Amazon: ${formatPrice(amazonPrice)}</span>` : "";
   const unavailBadge = isUnavailable ? `<span class="unavailable-badge">Not available</span>` : "";
 
   return `
@@ -94,8 +92,8 @@ function renderMatch(result, amazonPrice, shop) {
         <span class="bol-price ${colorClass}">${priceStr}</span>
         ${diffStr}
       </div>
-      ${amazonRef}
       ${specDiffHtml(result.specDiffs, shopName)}
+      ${searchUrl ? `<a href="${escAttr(searchUrl)}" target="_blank" class="card-search-link">More options on ${escHtml(shopName)} →</a>` : ""}
       <span class="arrow-icon">›</span>
     </div>`;
 }
@@ -139,10 +137,11 @@ function attachClickHandlers() {
     });
   });
 
-  // Also handle footer links (regular <a> tags with target="_blank")
+  // Also handle footer links and in-card search links (regular <a> tags with target="_blank")
   content.querySelectorAll('a[target="_blank"]').forEach((el) => {
     el.addEventListener("click", (e) => {
       e.preventDefault();
+      e.stopPropagation();
       const url = el.getAttribute("href");
       if (url && url !== "#") chrome.tabs.create({ url });
     });
@@ -268,7 +267,7 @@ function render(data) {
   // Render shop cards
   const shopCards = shopsWithResults.map(([shopId, shopData]) => {
     const shop = SHOPS[shopId] || { name: shopId, color: "#666" };
-    return renderMatch(shopData.results[0], ap, shop);
+    return renderMatch(shopData.results[0], ap, shop, shopData.searchUrl);
   }).join("");
 
   // Show alternative only for the first shop (to keep it clean)
@@ -278,22 +277,13 @@ function render(data) {
   const altShop = SHOPS[firstShopId];
   const altHtml = alt ? renderAlternative(alt, ap, altShop) : "";
 
-  // Footer: manual search links per shop that was searched
-  const searchedShopIds = Object.keys(shopResults);
-  const footerLinks = searchedShopIds.map(shopId => {
-    const shop = SHOPS[shopId] || { name: shopId };
-    const url = shopResults[shopId]?.searchUrl || "#";
-    return `<a href="${escAttr(url)}" target="_blank">View on ${escHtml(shop.name)} →</a>`;
-  }).join(" · ");
-
   content.innerHTML = `
     ${statusBarHtml(statusClass, statusText + methodNote)}
     ${amazonBar(data.amazonProduct)}
     ${shopCards}
     ${altHtml}
     <div class="footer">
-      <div>${footerLinks}</div>
-      <span class="version">v${VERSION}</span>
+      <span class="version">ShopSwitch v${VERSION}</span>
     </div>`;
 
   attachClickHandlers();

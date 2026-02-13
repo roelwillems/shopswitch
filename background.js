@@ -165,6 +165,8 @@ function cleanTitle(title, maxWords) {
   let t = title
     .replace(/\(.*?\)/g, " ").replace(/\[.*?\]/g, " ").replace(/\{.*?\}/g, " ")
     .replace(/\|.*$/g, "").replace(/\s[-–—]\s.*$/g, "")
+    // Strip Dutch/English book genre tags after colon (e.g. "Bloedkoraal: thriller" → "Bloedkoraal")
+    .replace(/:\s*(thriller|roman|novelle|gedichten|verhalen|biografie|autobiografie|memoir|essays|po[eë]zie|novel|poetry|fiction|nonfiction|non-fiction)\s*$/i, "")
     .replace(/,\s*(zwart|wit|black|white|grijs|grey|silver|zilver|blauw|blue|rood|red|groen|green|roze|pink|goud|gold|paars|purple)$/i, "")
     .replace(/\b(nieuw!?|bestseller|aanbieding|sale|limited\s*edition|exclusive)\b/gi, "")
     .replace(/\b\d+\s*x\s*\d+\s*x?\s*\d*\s*(cm|mm|m|inch)?\b/gi, "")
